@@ -1,0 +1,21 @@
+{
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:3b",
+    "api_base": "http://localhost:11434",
+    "api_key_env": null
+  },
+  "privacy": {
+    "data_residency": "local",
+    "allow_cloud_fallback": false
+  },
+  "performance": {
+    "parallel_scrapers": 4,
+    "parallel_agents": 1,
+    "max_context_snippets": 5
+  },
+  "cost_control": {
+    "max_budget_usd": 0.01,
+    "warn_if_exceeds": true
+  }
+}

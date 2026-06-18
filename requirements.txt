@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+duckduckgo-search
+requests
+psutil
+markdown
+xhtml2pdf
+python-docx
+newspaper3k
+googlesearch-python
+pdfkit
+beautifulsoup4
+lxml

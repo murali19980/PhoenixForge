@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+ENV/
+env/
+
+# SQLite Database (Local History Vault)
+*.db
+*.sqlite3
+
+# Reports and temporary files
+phoenixforge_report.pdf
+phoenixforge_report.docx
+phoenixforge_report.md
+test.pdf
+test.docx
+raw_data.txt
+
+# Editor / System config
+.idea/
+.vscode/
+.claude/
+.gemini/
+Thumbs.db
+ehthumbs.db
+Desktop.ini
