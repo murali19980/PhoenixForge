@@ -47,7 +47,7 @@ function cacheDOM() {
         'exportPlanPdf', 'exportPlanWord',
         'errorBanner', 'errorMessage', 'dismissError',
         'charCount', 'progressBar', 'progressPercent', 'toast', 'toastMessage', 'clearHistoryBtn',
-        'coordinatorLearning', 'coordinatorScore'
+        'coordinatorLearning', 'coordinatorScore', 'modelSelect'
     ];
     ids.forEach(id => { DOM[id] = document.getElementById(id); });
 }
@@ -168,6 +168,41 @@ async function loadCoordinatorStatus() {
     }
 }
 
+async function loadModels() {
+    try {
+        const response = await fetch('/api/models');
+        if (!response.ok) throw new Error("Could not load model list");
+        const data = await response.json();
+        const models = data.models || [];
+        
+        if (DOM.modelSelect) {
+            DOM.modelSelect.innerHTML = '';
+            models.forEach(model => {
+                const opt = document.createElement('option');
+                opt.value = model;
+                opt.textContent = model;
+                DOM.modelSelect.appendChild(opt);
+            });
+            
+            // Restore from localStorage if present
+            const savedModel = localStorage.getItem('phoenixforge_preferred_model');
+            if (savedModel && models.includes(savedModel)) {
+                DOM.modelSelect.value = savedModel;
+            }
+            
+            // Save preference on change
+            DOM.modelSelect.onchange = () => {
+                localStorage.setItem('phoenixforge_preferred_model', DOM.modelSelect.value);
+            };
+        }
+    } catch (e) {
+        console.error("Failed to load models list:", e);
+        if (DOM.modelSelect) {
+            DOM.modelSelect.innerHTML = `<option value="">Default Model</option>`;
+        }
+    }
+}
+
 async function clearHistory() {
     if (!confirm("Are you sure you want to delete all historical analysis records? This cannot be undone.")) return;
     try {
@@ -278,6 +313,7 @@ async function performAnalysis(idea) {
     DOM.skeletonScreen.classList.remove('hidden');
     DOM.results.classList.add('hidden');
     DOM.submitBtn.disabled = true;
+    if (DOM.modelSelect) DOM.modelSelect.disabled = true;
     DOM.btnSpinner.classList.remove('hidden');
     DOM.btnText.textContent = "Processing...";
     
@@ -289,11 +325,13 @@ async function performAnalysis(idea) {
     }
     AppState.abortController = new AbortController();
 
+    const selectedModel = DOM.modelSelect ? DOM.modelSelect.value : '';
+
     try {
         const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idea: idea })
+            body: JSON.stringify({ idea: idea, model: selectedModel })
         });
 
         if (!response.ok) {
@@ -382,6 +420,7 @@ async function performAnalysis(idea) {
         }
     } finally {
         AppState.isAnalyzing = false;
+        if (DOM.modelSelect) DOM.modelSelect.disabled = false;
         DOM.loader.classList.add('hidden');
         DOM.skeletonScreen.classList.add('hidden');
         DOM.submitBtn.disabled = false;
@@ -686,4 +725,5 @@ window.addEventListener('DOMContentLoaded', () => {
     // Initial loads on boot
     loadHistory();
     loadCoordinatorStatus();
+    loadModels();
 });

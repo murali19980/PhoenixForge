@@ -7,18 +7,19 @@ CONFIG = load_config()
 def enforce_privacy():
     if CONFIG['privacy']['data_residency'] == 'local' and CONFIG['llm']['provider'] != 'ollama':
         raise SystemExit("Privacy Error: data_residency='local' but provider is not Ollama.")
-def ask_llm(prompt_text):
+def ask_llm(prompt_text, model_override=None):
     enforce_privacy()
+    model = model_override if model_override else CONFIG['llm'].get('default_model', CONFIG['llm'].get('model', 'qwen2.5-coder:3b'))
     resp = requests.post(f"{CONFIG['llm']['api_base']}/api/generate", 
-                         json={'model': CONFIG['llm']['model'], 'prompt': prompt_text, 'stream': False})
+                         json={'model': model, 'prompt': prompt_text, 'stream': False})
     return resp.json()['response']
 import logging
 
 logger = logging.getLogger("phoenixforge.llm_router")
 
-def ask_llm_json(prompt_part, context_text):
+def ask_llm_json(prompt_part, context_text, model_override=None):
     full_prompt = f"Task: {prompt_part}\nText: {context_text[:3000]}\nReturn ONLY valid JSON."
-    raw = ask_llm(full_prompt).strip().strip('```json').strip('```').strip()
+    raw = ask_llm(full_prompt, model_override=model_override).strip().strip('```json').strip('```').strip()
     try:
         data = json.loads(raw)
         # Whitelist allowed keys to mitigate untrusted schema injection

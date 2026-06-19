@@ -333,7 +333,7 @@ def generate_mermaid_flowchart(idea, failures):
     mermaid += "```"
     return mermaid
 
-def step_by_step_extractor(raw_text, idea):
+def step_by_step_extractor(raw_text, idea, model=None):
     """Forces the LLM to act as a Project Coroner (Business/UX failure analyst)."""
     base_prompt = f"""
     You are a brutally honest Project Coroner. Your job is to autopsy why business ideas FAIL.
@@ -383,7 +383,7 @@ def step_by_step_extractor(raw_text, idea):
     Do not include anything else. No markdown, no explanations. Just the raw JSON.
     """
     logger.info("[Coroner] Running Project Coroner analysis...")
-    return ask_llm_json(base_prompt, raw_text)
+    return ask_llm_json(base_prompt, raw_text, model_override=model)
 
 def calculate_quality_score(source_count, raw_text):
     import re
@@ -408,7 +408,7 @@ def calculate_quality_score(source_count, raw_text):
     total_score = diversity_score + density_score + metrics_score
     return round(total_score, 2)
 
-def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, strategy_metadata=None):
+def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, strategy_metadata=None, model=None):
     logger.info(f"[PhoenixForge] Scanning: {idea}")
     audit = system_audit()
     
@@ -449,7 +449,7 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
             graveyard_lines.append(f"Source: Scraped Link {i+1} ({url})")
         cleaned_text = "\n".join(graveyard_lines)
     
-    data = step_by_step_extractor(raw_text, idea)
+    data = step_by_step_extractor(raw_text, idea, model=model)
     
     ux_risks = data.get('ux_risks', [])
     market_risks = data.get('market_risks', [])

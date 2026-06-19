@@ -37,6 +37,7 @@ active_tasks = {}
 
 class IdeaRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=150)
+    model: Optional[str] = None
     
     @validator('idea')
     def validate_idea(cls, v: str) -> str:
@@ -66,7 +67,7 @@ def extract_pipeline_metadata(content):
             pass
     return pipeline
 
-async def run_pipeline_worker(task_id: str, idea: str):
+async def run_pipeline_worker(task_id: str, idea: str, model: Optional[str] = None):
     import engine
     import coordinator
     try:
@@ -91,7 +92,8 @@ async def run_pipeline_worker(task_id: str, idea: str):
             task_id,
             active_tasks,
             queries,
-            strategy_metadata
+            strategy_metadata,
+            model
         )
         active_tasks[task_id]["status"] = "completed"
         active_tasks[task_id]["current_step"] = "Completed"
@@ -102,6 +104,23 @@ async def run_pipeline_worker(task_id: str, idea: str):
         active_tasks[task_id]["status"] = "failed"
         active_tasks[task_id]["current_step"] = "Analysis failed"
         active_tasks[task_id]["message"] = str(e)
+
+@app.get("/api/models")
+async def list_installed_models():
+    """Fetch installed Ollama models from local Ollama instance."""
+    import requests
+    from llm_router import CONFIG
+    api_base = CONFIG['llm']['api_base']
+    try:
+        resp = requests.get(f"{api_base}/api/tags", timeout=3)
+        resp.raise_for_status()
+        data = resp.json()
+        models = [m["name"] for m in data.get("models", [])]
+        return {"models": models}
+    except Exception as e:
+        logger.warning(f"Failed to query Ollama models: {e}")
+        default_m = CONFIG['llm'].get('default_model', CONFIG['llm'].get('model', 'qwen2.5-coder:3b'))
+        return {"models": [default_m]}
 
 @app.post("/api/analyze")
 @limiter.limit("3/minute")
@@ -130,7 +149,7 @@ async def analyze_risk(request: Request, idea_req: IdeaRequest):
     }
     
     # Schedule task concurrently on the event loop
-    asyncio.create_task(run_pipeline_worker(task_id, idea_req.idea))
+    asyncio.create_task(run_pipeline_worker(task_id, idea_req.idea, idea_req.model))
     
     return {"task_id": task_id}
 
