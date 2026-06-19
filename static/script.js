@@ -47,7 +47,7 @@ function cacheDOM() {
         'exportPlanPdf', 'exportPlanWord',
         'errorBanner', 'errorMessage', 'dismissError',
         'charCount', 'progressBar', 'progressPercent', 'toast', 'toastMessage', 'clearHistoryBtn',
-        'coordinatorLearning', 'coordinatorScore', 'modelSelect'
+        'coordinatorLearning', 'coordinatorScore', 'modelSelect', 'loaderTitle', 'loaderSubtitle', 'loaderProgress'
     ];
     ids.forEach(id => { DOM[id] = document.getElementById(id); });
 }
@@ -55,6 +55,16 @@ function cacheDOM() {
 // ============================================
 // UTILITY FUNCTIONS
 // ============================================
+
+function safeSetText(id, text) {
+    const el = DOM[id] || document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+function safeSetHTML(id, html) {
+    const el = DOM[id] || document.getElementById(id);
+    if (el) el.innerHTML = html;
+}
 
 function escapeHtml(text) {
     if (!text) return '';
@@ -73,8 +83,9 @@ function showToast(message, type = 'success') {
     const style = colors[type] || colors.success;
     DOM.toast.className = `fixed bottom-6 right-6 z-50 glass rounded-xl px-4 py-3 flex items-center gap-2 border ${style.border} ${style.bg} toast-visible`;
     DOM.toastMessage.className = `text-sm font-medium ${style.text}`;
-    DOM.toastMessage.textContent = message;
-    DOM.toast.querySelector('span:first-child').textContent = style.icon;
+    safeSetText('toastMessage', message);
+    const firstSpan = DOM.toast.querySelector('span:first-child');
+    if (firstSpan) firstSpan.textContent = style.icon;
     
     // Clear any previous transition classes
     DOM.toast.style.transform = 'translateY(0)';
@@ -88,7 +99,7 @@ function showToast(message, type = 'success') {
 
 function showError(message) {
     if (!DOM.errorBanner || !DOM.errorMessage) { showToast(message, 'error'); return; }
-    DOM.errorMessage.textContent = message;
+    safeSetText('errorMessage', message);
     DOM.errorBanner.classList.remove('hidden');
     DOM.errorBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -100,7 +111,7 @@ function hideError() {
 function updateCharCount() {
     if (!DOM.ideaInput || !DOM.charCount) return;
     const len = DOM.ideaInput.value.length;
-    DOM.charCount.textContent = `${len}/${CONFIG.MAX_INPUT_LENGTH}`;
+    safeSetText('charCount', `${len}/${CONFIG.MAX_INPUT_LENGTH}`);
     if (len > CONFIG.MAX_INPUT_LENGTH * 0.9) {
         DOM.charCount.className = 'text-xs mt-1 text-right text-red-500 font-semibold';
     } else {
@@ -113,9 +124,7 @@ function updateProgress(percent, text = '') {
         DOM.progressBar.style.width = `${Math.min(percent, 100)}%`;
         DOM.progressBar.setAttribute('aria-valuenow', Math.min(percent, 100));
     }
-    if (DOM.progressPercent) {
-        DOM.progressPercent.textContent = text || `${Math.round(percent)}%`;
-    }
+    safeSetText('progressPercent', text || `${Math.round(percent)}%`);
 }
 
 function resetPipeline() {
@@ -127,12 +136,11 @@ function resetPipeline() {
     ];
     steps.forEach(step => {
         const iconEl = document.getElementById(step.icon);
-        const descEl = document.getElementById(step.desc);
         if (iconEl) {
             iconEl.className = 'w-10 h-10 rounded-full flex items-center justify-center border-2 border-slate-700 bg-slate-900 text-slate-400 text-sm font-bold mb-2 transition-all duration-300';
             iconEl.textContent = step.text;
         }
-        if (descEl) descEl.textContent = step.label;
+        safeSetText(step.desc, step.label);
     });
     if (DOM.pipelineCard) DOM.pipelineCard.classList.add('hidden');
 }
@@ -140,15 +148,17 @@ function resetPipeline() {
 function completePipelineStep(stepName, detail) {
     const iconMap = { gather: 'stepGatherIcon', clean: 'stepCleanIcon', organize: 'stepOrganizeIcon', present: 'stepPresentIcon' };
     const descMap = { gather: 'stepGatherDesc', clean: 'stepCleanDesc', organize: 'stepOrganizeDesc', present: 'stepPresentDesc' };
-    const iconEl = document.getElementById(iconMap[stepName]);
-    const descEl = document.getElementById(descMap[stepName]);
     
+    const iconId = iconMap[stepName];
+    const descId = descMap[stepName];
+    
+    const iconEl = iconId ? document.getElementById(iconId) : null;
     if (iconEl) {
         iconEl.className = 'w-10 h-10 rounded-full flex items-center justify-center border-2 border-emerald-500 bg-emerald-950 text-emerald-400 text-sm font-bold mb-2 shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-300';
         iconEl.textContent = '✅';
     }
-    if (descEl && detail) {
-        descEl.textContent = detail;
+    if (detail) {
+        safeSetText(descId, detail);
     }
 }
 
@@ -161,8 +171,8 @@ async function loadCoordinatorStatus() {
         const response = await fetch('/api/coordinator/status');
         if (!response.ok) return;
         const data = await response.json();
-        if (DOM.coordinatorLearning) DOM.coordinatorLearning.textContent = data.summary || '';
-        if (DOM.coordinatorScore) DOM.coordinatorScore.textContent = data.best_score ? data.best_score.toFixed(2) : '0.00';
+        safeSetText('coordinatorLearning', data.summary || '');
+        safeSetText('coordinatorScore', data.best_score ? data.best_score.toFixed(2) : '0.00');
     } catch (e) {
         console.error("Failed to load coordinator status:", e);
     }
@@ -211,7 +221,7 @@ async function clearHistory() {
             showToast("History vault successfully cleared!");
             loadHistory();
             loadCoordinatorStatus();
-            DOM.results.classList.add('hidden');
+            if (DOM.results) DOM.results.classList.add('hidden');
         } else {
             showToast("Failed to clear history vault.", "error");
         }
@@ -221,6 +231,7 @@ async function clearHistory() {
 }
 
 async function loadHistory() {
+    if (!DOM.historyList) return;
     try {
         const response = await fetch('/api/history');
         if (!response.ok) return;
@@ -260,21 +271,25 @@ async function loadHistory() {
             // Bind buttons
             itemDiv.querySelector('.reanalyze-btn').onclick = (e) => {
                 const idea = e.target.getAttribute('data-idea');
-                DOM.ideaInput.value = idea;
-                DOM.historySidebar.classList.add('translate-x-full');
-                DOM.historySidebar.setAttribute('aria-hidden', 'true');
+                if (DOM.ideaInput) DOM.ideaInput.value = idea;
+                if (DOM.historySidebar) {
+                    DOM.historySidebar.classList.add('translate-x-full');
+                    DOM.historySidebar.setAttribute('aria-hidden', 'true');
+                }
                 performAnalysis(idea);
             };
             
             itemDiv.querySelector('.load-btn').onclick = async (e) => {
                 const id = e.target.getAttribute('data-id');
-                DOM.historySidebar.classList.add('translate-x-full');
-                DOM.historySidebar.setAttribute('aria-hidden', 'true');
+                if (DOM.historySidebar) {
+                    DOM.historySidebar.classList.add('translate-x-full');
+                    DOM.historySidebar.setAttribute('aria-hidden', 'true');
+                }
                 
                 // Show loader and skeletons
-                DOM.loader.classList.remove('hidden');
-                DOM.skeletonScreen.classList.remove('hidden');
-                DOM.results.classList.add('hidden');
+                if (DOM.loader) DOM.loader.classList.remove('hidden');
+                if (DOM.skeletonScreen) DOM.skeletonScreen.classList.remove('hidden');
+                if (DOM.results) DOM.results.classList.add('hidden');
                 hideError();
                 
                 try {
@@ -282,15 +297,15 @@ async function loadHistory() {
                     if (!res.ok) throw new Error("Could not load history details");
                     const detail = await res.json();
                     AppState.currentHistoryId = id; // Track active history record ID
-                    DOM.ideaInput.value = detail.idea || DOM.ideaInput.value;
+                    if (DOM.ideaInput) DOM.ideaInput.value = detail.idea || DOM.ideaInput.value;
                     updateCharCount();
                     renderResults(detail);
-                    DOM.results.classList.remove('hidden');
+                    if (DOM.results) DOM.results.classList.remove('hidden');
                 } catch (err) {
                     showError("Error loading historical analysis: " + err.message);
                 } finally {
-                    DOM.loader.classList.add('hidden');
-                    DOM.skeletonScreen.classList.add('hidden');
+                    if (DOM.loader) DOM.loader.classList.add('hidden');
+                    if (DOM.skeletonScreen) DOM.skeletonScreen.classList.add('hidden');
                 }
             };
             
@@ -309,13 +324,13 @@ async function performAnalysis(idea) {
     resetPipeline();
 
     // Show loader, skeletons and disable submit
-    DOM.loader.classList.remove('hidden');
-    DOM.skeletonScreen.classList.remove('hidden');
-    DOM.results.classList.add('hidden');
-    DOM.submitBtn.disabled = true;
+    if (DOM.loader) DOM.loader.classList.remove('hidden');
+    if (DOM.skeletonScreen) DOM.skeletonScreen.classList.remove('hidden');
+    if (DOM.results) DOM.results.classList.add('hidden');
+    if (DOM.submitBtn) DOM.submitBtn.disabled = true;
     if (DOM.modelSelect) DOM.modelSelect.disabled = true;
-    DOM.btnSpinner.classList.remove('hidden');
-    DOM.btnText.textContent = "Processing...";
+    if (DOM.btnSpinner) DOM.btnSpinner.classList.remove('hidden');
+    safeSetText('btnText', "Processing...");
     
     updateProgress(5, "Queueing task...");
 
@@ -384,8 +399,8 @@ async function performAnalysis(idea) {
                 const step = statusData.current_step || "Running research...";
                 const msg = statusData.message || "";
                 
-                DOM.loaderTitle.textContent = "Researching and Analyzing...";
-                DOM.loaderSubtitle.textContent = step;
+                safeSetText('loaderTitle', "Researching and Analyzing...");
+                safeSetText('loaderSubtitle', step);
                 
                 if (step.includes("Found") || step.includes("Scraping")) {
                     completePipelineStep('gather', step);
@@ -411,7 +426,7 @@ async function performAnalysis(idea) {
                 AppState.currentHistoryId = finalData.id;
             }
             renderResults(finalData);
-            DOM.results.classList.remove('hidden');
+            if (DOM.results) DOM.results.classList.remove('hidden');
             showToast("Risk analysis complete!", "success");
         }
     } catch (err) {
@@ -421,11 +436,11 @@ async function performAnalysis(idea) {
     } finally {
         AppState.isAnalyzing = false;
         if (DOM.modelSelect) DOM.modelSelect.disabled = false;
-        DOM.loader.classList.add('hidden');
-        DOM.skeletonScreen.classList.add('hidden');
-        DOM.submitBtn.disabled = false;
-        DOM.btnSpinner.classList.add('hidden');
-        DOM.btnText.textContent = "🔥 Analyze Risks";
+        if (DOM.loader) DOM.loader.classList.add('hidden');
+        if (DOM.skeletonScreen) DOM.skeletonScreen.classList.add('hidden');
+        if (DOM.submitBtn) DOM.submitBtn.disabled = false;
+        if (DOM.btnSpinner) DOM.btnSpinner.classList.add('hidden');
+        safeSetText('btnText', "🔥 Analyze Risks");
         loadHistory(); // Refresh history list
         loadCoordinatorStatus(); // Refresh coordinator learning card
     }
@@ -445,7 +460,7 @@ function renderResults(data) {
     const pivots = fixes.filter(f => f.category === 'General').map(f => f.issue);
 
     // 1. RENDER EXECUTIVE SUMMARY
-    const idea = escapeHtml(DOM.ideaInput.value.trim());
+    const idea = DOM.ideaInput ? escapeHtml(DOM.ideaInput.value.trim()) : '';
     
     let summaryText = "";
     const allRisksText = [...uxRisks, ...techRisks, ...costRisks].join(", ");
@@ -460,8 +475,8 @@ function renderResults(data) {
         summaryText += `To survive and capture value, consider these pivot options: ${pivotsText}.`;
     }
     
-    DOM.summaryContent.textContent = summaryText;
-    DOM.summaryCard.classList.remove('hidden');
+    safeSetText('summaryContent', summaryText);
+    if (DOM.summaryCard) DOM.summaryCard.classList.remove('hidden');
 
     // RENDER PIPELINE PROGRESS TRACKER
     const pipeline = data.pipeline || {};
@@ -475,13 +490,13 @@ function renderResults(data) {
 
     // 2. RENDER GRAVEYARD (NEGATIVE REVIEWS)
     const graveyardText = data.graveyard || 'No negative signals detected. Either this idea is perfect (unlikely) or the scrapers missed something.';
-    DOM.graveyardContent.textContent = graveyardText;
+    safeSetText('graveyardContent', graveyardText);
 
     // RENDER SOURCES COLLAPSIBLE
     if (DOM.sourcesCollapseContainer && DOM.sourcesCollapse) {
         const urls = data.scraped_urls || [];
         if (urls.length > 0) {
-            DOM.sourceCount.textContent = urls.length;
+            safeSetText('sourceCount', urls.length);
             DOM.sourcesCollapse.innerHTML = '';
             urls.forEach((url, index) => {
                 let domain = 'Source';
@@ -506,106 +521,117 @@ function renderResults(data) {
     const displayNames = { Cost: "Financial & Scaling Risk", Tech: "Market & B2B Risk", UX: "UX & Retention Risk" };
     const categoryIcons = { Cost: "💸", Tech: "💼", UX: "👥" };
 
-    DOM.heatmapContainer.innerHTML = '';
-    const entries = Object.entries(data.heatmap || {});
-    if (entries.length === 0) {
-        DOM.heatmapContainer.innerHTML = `<div class="col-span-3 text-center text-gray-500">No risks detected.</div>`;
-    } else {
-        entries.forEach(([key, value]) => {
-            const card = document.createElement('div');
-            card.className = 'glass rounded-2xl p-6 border border-white/5 flex flex-col justify-between heatmap-card';
-            
-            const severityLabel = value >= 3 ? "Very High" : value === 2 ? "High" : value === 1 ? "Medium" : "Low";
-            const severityColor = value >= 3 ? "text-red-500" : value === 2 ? "text-orange-500" : value === 1 ? "text-yellow-500" : "text-green-500";
-            const intensity = value > 0 ? '🔥'.repeat(Math.min(value, 5)) : '✅';
-            
-            let desc = "";
-            if (key === 'Cost') desc = costRisks[0] || "No financial or scaling bottlenecks detected.";
-            else if (key === 'Tech') desc = techRisks[0] || "No market or validation bottlenecks detected.";
-            else if (key === 'UX') desc = uxRisks[0] || "No retention or onboarding bottlenecks detected.";
+    if (DOM.heatmapContainer) {
+        DOM.heatmapContainer.innerHTML = '';
+        const entries = Object.entries(data.heatmap || {});
+        if (entries.length === 0) {
+            DOM.heatmapContainer.innerHTML = `<div class="col-span-3 text-center text-gray-500">No risks detected.</div>`;
+        } else {
+            entries.forEach(([key, value]) => {
+                const card = document.createElement('div');
+                card.className = 'glass rounded-2xl p-6 border border-white/5 flex flex-col justify-between heatmap-card';
+                
+                const severityLabel = value >= 3 ? "Very High" : value === 2 ? "High" : value === 1 ? "Medium" : "Low";
+                const severityColor = value >= 3 ? "text-red-500" : value === 2 ? "text-orange-500" : value === 1 ? "text-yellow-500" : "text-green-500";
+                const intensity = value > 0 ? '🔥'.repeat(Math.min(value, 5)) : '✅';
+                
+                let desc = "";
+                if (key === 'Cost') desc = costRisks[0] || "No financial or scaling bottlenecks detected.";
+                else if (key === 'Tech') desc = techRisks[0] || "No market or validation bottlenecks detected.";
+                else if (key === 'UX') desc = uxRisks[0] || "No retention or onboarding bottlenecks detected.";
 
-            card.innerHTML = `
-                <div>
-                    <div class="text-2xl mb-2">${categoryIcons[key] || '📊'}</div>
-                    <div class="text-sm font-semibold text-gray-400 uppercase tracking-wider">${displayNames[key] || key}</div>
-                </div>
-                <div class="mt-4">
-                    <div class="text-2xl font-bold ${severityColor}">${severityLabel}</div>
-                    <div class="text-xs text-gray-600 mt-1">${intensity} (${value} signals found)</div>
-                    <p class="text-xs text-slate-400 mt-4 leading-relaxed border-t border-white/5 pt-3">${escapeHtml(desc)}</p>
-                </div>
-            `;
-            DOM.heatmapContainer.appendChild(card);
-        });
+                card.innerHTML = `
+                    <div>
+                        <div class="text-2xl mb-2">${categoryIcons[key] || '📊'}</div>
+                        <div class="text-sm font-semibold text-gray-400 uppercase tracking-wider">${displayNames[key] || key}</div>
+                    </div>
+                    <div class="mt-4">
+                        <div class="text-2xl font-bold ${severityColor}">${severityLabel}</div>
+                        <div class="text-xs text-gray-600 mt-1">${intensity} (${value} signals found)</div>
+                        <p class="text-xs text-slate-400 mt-4 leading-relaxed border-t border-white/5 pt-3">${escapeHtml(desc)}</p>
+                    </div>
+                `;
+                DOM.heatmapContainer.appendChild(card);
+            });
+        }
     }
 
     // RENDER VISUAL FLOWCHART
-    const rawContentText = data.raw_content || '';
-    const mermaidMatch = rawContentText.match(/```mermaid\s*([\s\S]*?)```/);
-    if (mermaidMatch && mermaidMatch[1]) {
-        const mermaidCode = mermaidMatch[1].trim();
-        DOM.flowchartCard.classList.remove('hidden');
-        DOM.mermaidDiagram.removeAttribute('data-processed');
-        DOM.mermaidDiagram.textContent = mermaidCode;
-        try {
-            mermaid.run({ nodes: [DOM.mermaidDiagram] });
-        } catch (e) {
-            console.error("Mermaid rendering failed:", e);
+    if (DOM.flowchartCard && DOM.mermaidDiagram) {
+        const rawContentText = data.raw_content || '';
+        const mermaidMatch = rawContentText.match(/```mermaid\s*([\s\S]*?)```/);
+        if (mermaidMatch && mermaidMatch[1]) {
+            const mermaidCode = mermaidMatch[1].trim();
+            DOM.flowchartCard.classList.remove('hidden');
+            DOM.mermaidDiagram.removeAttribute('data-processed');
+            DOM.mermaidDiagram.textContent = mermaidCode;
+            try {
+                mermaid.run({ nodes: [DOM.mermaidDiagram] });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        } else {
+            DOM.flowchartCard.classList.add('hidden');
         }
-    } else {
-        DOM.flowchartCard.classList.add('hidden');
     }
 
     // 4. RENDER FIXES
-    DOM.fixesContainer.innerHTML = '';
-    if (fixes.length === 0) {
-        DOM.fixesContainer.innerHTML = `<div class="text-gray-500 text-center py-4">No specific fixes generated.</div>`;
-    } else {
-        fixes.forEach((fix, idx) => {
-            const div = document.createElement('div');
-            div.className = 'glass p-5 rounded-2xl border border-white/5 space-y-2 fix-card';
-            
-            let badgeText = '';
-            let badgeColor = '';
-            let title = '';
-            let desc = fix.issue;
-            
-            if (fix.category === 'General') {
-                badgeText = '💡 Pivot Strategy';
-                badgeColor = 'bg-orange-500/20 text-orange-400';
-                const parts = fix.issue.split(':');
-                if (parts.length > 1) {
-                    title = parts[0].trim();
-                    desc = parts.slice(1).join(':').trim();
+    if (DOM.fixesContainer) {
+        DOM.fixesContainer.innerHTML = '';
+        if (fixes.length === 0) {
+            DOM.fixesContainer.innerHTML = `<div class="text-gray-500 text-center py-4">No specific fixes generated.</div>`;
+        } else {
+            fixes.forEach((fix, idx) => {
+                const div = document.createElement('div');
+                div.className = 'glass p-5 rounded-2xl border border-white/5 space-y-2 fix-card';
+                
+                let badgeText = '';
+                let badgeColor = '';
+                let title = '';
+                let desc = fix.issue;
+                
+                if (fix.category === 'General') {
+                    badgeText = '💡 Pivot Strategy';
+                    badgeColor = 'bg-orange-500/20 text-orange-400';
+                    const parts = fix.issue.split(':');
+                    if (parts.length > 1) {
+                        title = parts[0].trim();
+                        desc = parts.slice(1).join(':').trim();
+                    } else {
+                        title = `Strategy Option`;
+                    }
                 } else {
-                    title = `Strategy Option`;
+                    badgeText = `⚡ Quick Win (${fix.category})`;
+                    badgeColor = fix.category === 'Cost' ? 'bg-red-500/20 text-red-400' : fix.category === 'Tech' ? 'bg-amber-500/20 text-amber-400' : 'bg-yellow-500/20 text-yellow-400';
+                    title = `Mitigate ${fix.category} Failure`;
                 }
-            } else {
-                badgeText = `⚡ Quick Win (${fix.category})`;
-                badgeColor = fix.category === 'Cost' ? 'bg-red-500/20 text-red-400' : fix.category === 'Tech' ? 'bg-amber-500/20 text-amber-400' : 'bg-yellow-500/20 text-yellow-400';
-                title = `Mitigate ${fix.category} Failure`;
-            }
-            
-            div.innerHTML = `
-                <div class="flex items-center justify-between">
-                    <span class="text-xs font-bold px-2.5 py-0.5 rounded-full ${badgeColor}">${badgeText}</span>
-                    <span class="text-xs font-mono text-slate-600">Option ${idx + 1}</span>
-                </div>
-                <h4 class="text-base font-bold text-slate-100">${escapeHtml(title)}</h4>
-                <p class="text-sm text-slate-400 leading-relaxed">${escapeHtml(desc)}</p>
-            `;
-            DOM.fixesContainer.appendChild(div);
-        });
+                
+                div.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold px-2.5 py-0.5 rounded-full ${badgeColor}">${badgeText}</span>
+                        <span class="text-xs font-mono text-slate-600">Option ${idx + 1}</span>
+                    </div>
+                    <h4 class="text-base font-bold text-slate-100">${escapeHtml(title)}</h4>
+                    <p class="text-sm text-slate-400 leading-relaxed">${escapeHtml(desc)}</p>
+                `;
+                DOM.fixesContainer.appendChild(div);
+            });
+        }
     }
 
     // RAW TOGGLE
-    DOM.rawContent.textContent = data.raw_content || 'No raw content available.';
-    DOM.rawContainer.classList.add('hidden');
-    DOM.toggleRawBtn.textContent = '📄 View Raw Report';
-    DOM.toggleRawBtn.onclick = () => {
-        DOM.rawContainer.classList.toggle('hidden');
-        DOM.toggleRawBtn.textContent = DOM.rawContainer.classList.contains('hidden') ? '📄 View Raw Report' : '📄 Hide Raw Report';
-    };
+    safeSetText('rawContent', data.raw_content || 'No raw content available.');
+    if (DOM.rawContainer) DOM.rawContainer.classList.add('hidden');
+    if (DOM.toggleRawBtn) {
+        safeSetText('toggleRawBtn', '📄 View Raw Report');
+        DOM.toggleRawBtn.onclick = () => {
+            if (DOM.rawContainer) DOM.rawContainer.classList.toggle('hidden');
+            if (DOM.toggleRawBtn && DOM.rawContainer) {
+                const text = DOM.rawContainer.classList.contains('hidden') ? '📄 View Raw Report' : '📄 Hide Raw Report';
+                safeSetText('toggleRawBtn', text);
+            }
+        };
+    }
 }
 
 // ============================================
@@ -629,18 +655,22 @@ window.addEventListener('DOMContentLoaded', () => {
         DOM.dismissError.onclick = hideError;
     }
 
-    // Toggle Sidebar
+        // Toggle Sidebar
     if (DOM.openHistoryBtn) {
         DOM.openHistoryBtn.onclick = () => {
-            DOM.historySidebar.classList.remove('translate-x-full');
-            DOM.historySidebar.setAttribute('aria-hidden', 'false');
+            if (DOM.historySidebar) {
+                DOM.historySidebar.classList.remove('translate-x-full');
+                DOM.historySidebar.setAttribute('aria-hidden', 'false');
+            }
             loadHistory();
         };
     }
     if (DOM.closeHistoryBtn) {
         DOM.closeHistoryBtn.onclick = () => {
-            DOM.historySidebar.classList.add('translate-x-full');
-            DOM.historySidebar.setAttribute('aria-hidden', 'true');
+            if (DOM.historySidebar) {
+                DOM.historySidebar.classList.add('translate-x-full');
+                DOM.historySidebar.setAttribute('aria-hidden', 'true');
+            }
         };
     }
 
@@ -650,7 +680,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     // Clipboard Copy logic
-    if (DOM.copySummaryBtn) {
+    if (DOM.copySummaryBtn && DOM.summaryContent) {
         DOM.copySummaryBtn.onclick = () => {
             const summaryText = DOM.summaryContent.textContent;
             if (!summaryText) return;
