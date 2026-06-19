@@ -27,266 +27,238 @@ def system_audit():
     logger.info(f"[System] RAM: {ram:.1f}GB, VRAM: {vram:.1f}GB")
     return {"ram": ram, "vram": vram}
 
-def get_offline_fallback(idea: str) -> str:
-    return (
-        f"[⚠️ REAL-TIME RESEARCH UNAVAILABLE] All search engines are temporarily "
-        f"blocked or rate-limited. Unable to perform real-time analysis for '{idea}'.\n\n"
-        f"Please try again in a few minutes, or manually search these resources:\n"
-        f"- https://www.failory.com/\n"
-        f"- https://news.ycombinator.com/\n"
-        f"- https://www.reddit.com/r/startups/\n"
-        f"- https://www.cbinsights.com/research/startup-failure-reasons/"
-    )
-
-def search_for_urls(idea: str, queries=None):
-    """
-    Search DuckDuckGo (and Google as fallback) for relevant startup failure signals.
-    """
-    import random
-    from urllib.parse import urlparse
+def load_jina_config():
+    """Loads Jina API config from config.json or environment."""
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
     
-    if not queries:
-        queries = [
-            f"{idea} failure post mortem",
-            f"{idea} horror story",
-            f"{idea} shut down",
-            f"{idea} abandoned"
-        ]
-        
-    logger.info(f"[Search] Executing search queries for: {idea}")
-    urls = []
-    
-    # Try DuckDuckGo first
+    api_key = os.getenv("JINA_API_KEY")
+    timeout = 15
     try:
-        from duckduckgo_search import DDGS
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
-        ]
-        headers = {'User-Agent': random.choice(user_agents)}
-        
-        with DDGS(headers=headers) as ddgs:
-            for q in queries:
-                try:
-                    logger.info(f"[DDG Search] Querying: {q}")
-                    results = list(ddgs.text(q, max_results=3))
-                    if results:
+        from llm_router import CONFIG
+        jina_conf = CONFIG.get("jina", {})
+        if not api_key:
+            api_key = jina_conf.get("api_key")
+        timeout = jina_conf.get("timeout", 15)
+    except Exception:
+        pass
+    return api_key, timeout
+
+# Curated high-quality post-mortem sources that always exist and load well
+_CURATED_POSTMORTEM_URLS = [
+    "https://niteo.co/blog/failed-saas-project",
+    "https://elliotbonneville.com/blog/validate-your-pricing-model-like-i-didnt/",
+    "https://mmartinfahy.medium.com/my-experience-releasing-3-failed-saas-products-e2b4e7d5bc7c",
+    "https://www.cbinsights.com/research/startup-failure-post-mortem/",
+    "https://medium.com/@SoldOutSupplier/my-startup-failed-i-lost-everything-ee3b50e1b6d4",
+    "https://www.failory.com/blog/startup-failure-reasons",
+    "https://www.indiehackers.com/post/my-product-failed-lessons-learned-after-2-years",
+]
+
+def search_web(idea: str, max_results=10) -> list:
+    """
+    Search for relevant failure post-mortems using:
+    1. HackerNews Algolia API — searches by idea keywords, then broader category queries
+    2. DuckDuckGo (fallback, often rate-limited)
+    3. Curated post-mortem URLs as guaranteed fallback
+    """
+    from urllib.parse import urlparse, quote_plus
+    
+    # Specific queries for the idea
+    specific_queries = [
+        f"{idea} failure post mortem",
+        f"{idea} why failed",
+        f"{idea} startup shut down",
+    ]
+    
+    # Broader queries that always return HN results
+    broad_queries = [
+        "startup failure post mortem lessons",
+        "SaaS failed why we shut down",
+        "product failure postmortem UX cost",
+    ]
+    
+    urls = []
+    ignored_domains = ['duckduckgo.com', 'google.com', 'bing.com', 'yahoo.com',
+                       'youtube.com', 'instagram.com', 'twitter.com', 'x.com',
+                       'facebook.com', 'linkedin.com', 'news.ycombinator.com']
+    
+    def is_valid_url(u):
+        try:
+            parsed = urlparse(u)
+            domain = parsed.netloc.lower()
+            if not parsed.scheme.startswith('http'):
+                return False
+            return not any(bad in domain for bad in ignored_domains)
+        except Exception:
+            return False
+    
+    # ── Strategy 1: HackerNews Algolia — specific idea queries ────────────────
+    headers_hn = {'User-Agent': 'PhoenixForge/3.0 (research-tool)'}
+    for q in specific_queries:
+        try:
+            search_url = f"https://hn.algolia.com/api/v1/search?query={quote_plus(q)}&hitsPerPage=5"
+            logger.info(f"[HN Search] Querying: {q}")
+            resp = requests.get(search_url, headers=headers_hn, timeout=8)
+            if resp.status_code == 200:
+                hits = resp.json().get('hits', [])
+                for hit in hits:
+                    story_url = hit.get('url')
+                    if story_url and is_valid_url(story_url) and story_url not in urls:
+                        urls.append(story_url)
+                logger.info(f"  [HN] Got {len(hits)} stories, {sum(1 for h in hits if h.get('url'))} with URLs")
+        except Exception as e:
+            logger.warning(f"[HN Search] Failed for '{q}': {e}")
+    
+    # ── Strategy 2: HackerNews Algolia — broader category queries ─────────────
+    if len(urls) < 3:
+        logger.info("[Search] Specific HN results sparse — broadening to SaaS/startup failure queries")
+        for q in broad_queries:
+            try:
+                search_url = f"https://hn.algolia.com/api/v1/search?query={quote_plus(q)}&hitsPerPage=4"
+                resp = requests.get(search_url, headers=headers_hn, timeout=8)
+                if resp.status_code == 200:
+                    hits = resp.json().get('hits', [])
+                    for hit in hits:
+                        story_url = hit.get('url')
+                        if story_url and is_valid_url(story_url) and story_url not in urls:
+                            urls.append(story_url)
+                    logger.info(f"  [HN Broad] Got {len(hits)} stories for '{q}'")
+            except Exception as e:
+                logger.warning(f"[HN Broad] Failed for '{q}': {e}")
+    
+    # ── Strategy 3: DuckDuckGo (last resort, often rate-limited) ──────────────
+    if len(urls) < 4:
+        logger.info("[Search] HN results sparse. Trying DuckDuckGo...")
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                for q in specific_queries[:2]:
+                    try:
+                        results = list(ddgs.text(q, max_results=3))
                         for r in results:
                             href = r.get('href')
-                            if href and href not in urls:
+                            if href and is_valid_url(href) and href not in urls:
                                 urls.append(href)
-                except Exception as ddg_single_err:
-                    logger.warning(f"[DDG Search] Query failed for '{q}': {ddg_single_err}")
-    except Exception as ddg_err:
-        logger.error(f"[DDG Search] Failed to initialize DDGS: {ddg_err}")
-        
-    # If DDG returned fewer than 4 URLs, try Google as a fallback
+                    except Exception as e:
+                        logger.warning(f"[DDG Search] Failed for '{q}': {e}")
+        except Exception as e:
+            logger.error(f"[DDG Search] Init failed: {e}")
+    
+    # ── Strategy 4: Curated fallback post-mortems (always available) ──────────
     if len(urls) < 4:
-        logger.info("[Search] DuckDuckGo results insufficient. Trying Google Search fallback...")
-        try:
-            from googlesearch import search as google_search
-            for q in queries:
-                try:
-                    logger.info(f"[Google Search] Querying: {q}")
-                    results = list(google_search(q, num_results=3))
-                    for url in results:
-                        if url and url not in urls:
-                            urls.append(url)
-                except Exception as google_single_err:
-                    logger.warning(f"[Google Search] Query failed for '{q}': {google_single_err}")
-        except Exception as google_err:
-            logger.error(f"[Google Search] Failed to initialize Google Search: {google_err}")
-            
-    # Filter out common search engine URLs or noise
-    filtered_urls = []
-    ignored_domains = ['duckduckgo.com', 'google.com', 'bing.com', 'yahoo.com', 'wikipedia.org', 'youtube.com']
-    for url in urls:
-        try:
-            domain = urlparse(url).netloc.lower()
-            if not any(ignored in domain for ignored in ignored_domains):
-                filtered_urls.append(url)
-        except Exception:
-            pass
-            
-    # Return at most 5 URLs to keep it fast and low memory
-    return filtered_urls[:5]
+        logger.info("[Search] Adding curated post-mortem fallback URLs for context")
+        for curated_url in _CURATED_POSTMORTEM_URLS:
+            if curated_url not in urls:
+                urls.append(curated_url)
+                if len(urls) >= max_results:
+                    break
+    
+    result = list(dict.fromkeys(urls))[:max_results]
+    logger.info(f"[Search] Total unique URLs collected: {len(result)}")
+    return result
+
+def extract_with_jina(url: str, api_key: str = None, timeout: int = 30) -> str:
+    """
+    Scrapes the URL using Jina AI Reader API (https://r.jina.ai/{url}).
+    Falls back to requests + BeautifulSoup if it fails.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import random
+    
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        
+    logger.info(f"[Jina Reader] Extracting: {url}")
+    try:
+        response = requests.get(jina_url, headers=headers, timeout=timeout)
+        if response.status_code == 200:
+            content = response.text
+            # Filter out Jina error responses (404, 429, etc.)
+            error_indicators = ['Warning: Target URL returned error', 'Not Found', 'Too Many Requests']
+            is_error_response = any(ind in content for ind in error_indicators) and len(content) < 400
+            if content and len(content.strip()) > 200 and not is_error_response:
+                logger.info(f"  [Success] Extracted {len(content)} chars from Jina Reader")
+                return content
+            elif is_error_response:
+                logger.warning(f"  [Warning] Jina Reader returned an error page for {url}")
+            else:
+                logger.warning(f"  [Warning] Received short content from Jina Reader for {url}")
+        else:
+            logger.warning(f"  [Warning] Jina Reader returned status code {response.status_code} for {url}")
+    except Exception as e:
+        logger.warning(f"  [Warning] Jina Reader request failed for {url}: {e}")
+        
+    # Fallback to requests + BeautifulSoup
+    logger.info(f"[Scraper Fallback] Scraping {url} with BeautifulSoup")
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+    ]
+    headers = {'User-Agent': random.choice(user_agents)}
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for element in soup(["script", "style", "nav", "header", "footer"]):
+                element.decompose()
+            lines = (line.strip() for line in soup.get_text().splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            if len(text) > 100:
+                logger.info(f"  [Success] Extracted {len(text)} chars (BS4 fallback)")
+                return text[:5000]
+    except Exception as e:
+        logger.error(f"  [Error] BS4 fallback failed for {url}: {e}")
+        
+    return ""
+
 
 def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=None):
     import time
-    import random
-    import gc
-    import psutil
     from urllib.parse import urlparse
-    import urllib.parse
     
     if active_tasks_dict and task_id:
         active_tasks_dict[task_id]["current_step"] = "Searching the web for failure signals..."
         active_tasks_dict[task_id]["message"] = "Querying search engines..."
         
-    urls = search_for_urls(idea, queries)
+    urls = search_web(idea, max_results=10)
     
     if not urls:
-        logger.info("[Scraper] No search results found. Using curated fallback database...")
-        fallback_insight = get_offline_fallback(idea)
-        warning_msg = f"[Warning] All search engines blocked. Using local fallback.\n\n{fallback_insight}"
+        logger.warning("[Scraper] No search results found at all.")
         return {
             "urls": [],
-            "combined_text": warning_msg,
-            "raw_combined_markdown": warning_msg,
+            "combined_text": "No real URLs could be retrieved. Check your internet connection or try again later.",
+            "raw_combined_markdown": "No real URLs could be retrieved. Check your internet connection or try again later.",
             "source_count": 0
         }
         
     if active_tasks_dict and task_id:
         active_tasks_dict[task_id]["total_articles"] = len(urls)
         active_tasks_dict[task_id]["current_step"] = f"Found {len(urls)} target URLs."
-        active_tasks_dict[task_id]["message"] = f"Beginning batch scrape of {len(urls)} targets..."
+        active_tasks_dict[task_id]["message"] = f"Extracting content from {len(urls)} targets..."
         
     logger.info(f"[Scraper] Deduplicated target URLs ({len(urls)}): {urls}")
     
-    scraped_data = {}
-    crawl4ai_success = False
+    jina_key, timeout = load_jina_config()
     
-    # Try Crawl4AI primary
-    try:
-        import asyncio
-        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-        from crawl4ai.content_filter_strategy import PruningContentFilter
-        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-        from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher, RateLimiter
-        
-        async def run_crawl4ai_scrape(url_list):
-            browser_config = BrowserConfig(
-                browser_type="chromium",
-                headless=True,
-                verbose=False,
-                text_mode=True,      # Blocks images
-                light_mode=True,     # Disables background features
-                extra_args=[
-                    "--blink-settings=imagesEnabled=false",
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--single-process",   # REDUCES MEMORY FOOTPRINT
-                    "--no-zygote",        # DISABLES ZYGOTE PROCESS
-                    "--disable-gpu",      # NO GPU IN HEADLESS
-                    "--js-flags=--max-old-space-size=512"  # LIMIT JS HEAP
-                ]
-            )
-            prune_filter = PruningContentFilter(
-                threshold=0.45,
-                threshold_type="fixed",
-                min_word_threshold=15
-            )
-            md_generator = DefaultMarkdownGenerator(content_filter=prune_filter)
+    scraped_data = {}
+    for idx, url in enumerate(urls):
+        netloc = urlparse(url).netloc
+        if active_tasks_dict and task_id:
+            active_tasks_dict[task_id]["current_step"] = f"Scraping {idx+1}/{len(urls)}: {netloc}"
+            active_tasks_dict[task_id]["message"] = "Extracting article body..."
             
-            run_config = CrawlerRunConfig(
-                cache_mode=CacheMode.BYPASS,
-                markdown_generator=md_generator,
-                remove_overlay_elements=True,
-                exclude_external_links=True,
-                page_timeout=35000,
-                wait_for="css:body",
-                delay_before_return_html=1.5
-            )
-            
-            nonlocal scraped_data
-            async with AsyncWebCrawler(config=browser_config) as crawler:
-                for idx, url in enumerate(url_list):
-                    netloc = urlparse(url).netloc
-                    if active_tasks_dict and task_id:
-                        active_tasks_dict[task_id]["current_step"] = f"Scraping {idx+1}/{len(url_list)}: {netloc}"
-                        active_tasks_dict[task_id]["message"] = "Crawling page..."
-                        
-                    logger.info(f"[Crawl4AI] Scraping {idx+1}/{len(url_list)}: {url}")
-                    try:
-                        res = await crawler.arun(url=url, config=run_config)
-                        if res.success:
-                            content = getattr(res, 'fit_markdown', None) or res.markdown
-                            if content and len(content.strip()) > 100:
-                                scraped_data[url] = content
-                                if active_tasks_dict and task_id:
-                                    active_tasks_dict[task_id]["extracted_count"] += 1
-                                logger.info(f"  [Success] Extracted {len(content)} chars")
-                            else:
-                                logger.warning(f"  [Warning] Empty content from {url}")
-                        else:
-                            logger.error(f"  [Error] Failed to crawl {url}: {res.error_message}")
-                    except Exception as single_err:
-                        logger.error(f"  [Error] Error crawling {url}: {single_err}")
-                        
-                    await asyncio.sleep(random.uniform(1.0, 3.0))
-        
-        try:
-            asyncio.run(run_crawl4ai_scrape(urls))
-        finally:
-            # Force garbage collection and clean up chromium processes to solve memory leaks
-            gc.collect()
-            for proc in psutil.process_iter(['pid', 'name']):
-                if proc.info['name'] in ('chromium', 'chrome', 'chromedriver'):
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=3)
-                    except Exception:
-                        pass
-        crawl4ai_success = len(scraped_data) > 0
-        
-    except Exception as e:
-        logger.warning(f"[Warning] Crawl4AI failed: {e}. Falling back to requests+BeautifulSoup...")
-        
-    # Fallback Scraper: Requests + BeautifulSoup + Deduplication
-    if not crawl4ai_success:
-        logger.info("[Scraper] Running lightweight requests + BeautifulSoup scraper...")
-        import requests
-        import difflib
-        from bs4 import BeautifulSoup
-        
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
-        ]
-        
-        for idx, url in enumerate(urls):
-            netloc = urlparse(url).netloc
+        content = extract_with_jina(url, api_key=jina_key, timeout=timeout)
+        if content and len(content.strip()) > 100:
+            scraped_data[url] = content[:5000] # Truncate each page to 5000 chars
             if active_tasks_dict and task_id:
-                active_tasks_dict[task_id]["current_step"] = f"Scraping {idx+1}/{len(urls)}: {netloc} (Fallback)"
-                active_tasks_dict[task_id]["message"] = "Fetching raw HTML..."
+                active_tasks_dict[task_id]["extracted_count"] += 1
                 
-            logger.info(f"[Fallback] Scraping {idx+1}/{len(urls)}: {url}")
-            try:
-                headers = {'User-Agent': random.choice(user_agents)}
-                r = requests.get(url, headers=headers, timeout=15)
-                if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, 'html.parser')
-                    for element in soup(["script", "style", "nav", "header", "footer"]):
-                        element.decompose()
-                    lines = (line.strip() for line in soup.get_text().splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    text = '\n'.join(chunk for chunk in chunks if chunk)
-                    
-                    if len(text) > 100:
-                        is_duplicate = False
-                        for existing_text in scraped_data.values():
-                            ratio = difflib.SequenceMatcher(None, text[:1000], existing_text[:1000]).ratio()
-                            if ratio > 0.8:
-                                is_duplicate = True
-                                break
-                        if not is_duplicate:
-                            scraped_data[url] = text[:5000]
-                            if active_tasks_dict and task_id:
-                                active_tasks_dict[task_id]["extracted_count"] += 1
-                            logger.info(f"  [Success] Extracted {len(text)} chars (BS4)")
-                        else:
-                            logger.warning(f"  [Warning] Duplicate content skipped: {url}")
-                else:
-                    print(f"  [Error] HTTP {r.status_code} on {url}")
-            except Exception as single_err:
-                print(f"  [Error] Failed to fetch {url}: {single_err}")
-                
-            time.sleep(random.uniform(0.5, 1.5))
-            
-    # Compile results
     if scraped_data:
         combined_text_lines = []
         for i, (url, text) in enumerate(scraped_data.items()):
@@ -299,7 +271,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
         
         words = combined_text.split()
         if len(words) > 8000:
-            print(f"[Scraper] Truncating combined text from {len(words)} to 8000 words...")
+            logger.info(f"[Scraper] Truncating combined text from {len(words)} to 8000 words...")
             combined_text = " ".join(words[:8000])
             
         with open("raw_data.txt", "w", encoding="utf-8") as f:
@@ -309,19 +281,17 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
             "urls": list(scraped_data.keys()),
             "combined_text": combined_text,
             "raw_combined_markdown": combined_text,
-            "source_count": len(scraped_data)
+            "source_count": len(scraped_data),
+            "scraped_data": scraped_data
         }
     else:
-        print("[Scraper] No web data scraped successfully. Activating curated offline fallback database...")
-        fallback_insight = get_offline_fallback(idea)
-        warning_msg = f"[Warning] All search engines blocked. Using local fallback.\n\n{fallback_insight}"
-        with open("raw_data.txt", "w", encoding="utf-8") as f:
-            f.write(warning_msg)
+        logger.warning("[Scraper] No web data scraped successfully.")
         return {
             "urls": [],
-            "combined_text": warning_msg,
-            "raw_combined_markdown": warning_msg,
-            "source_count": 0
+            "combined_text": "No real URLs could be retrieved. Check your internet connection or try again later.",
+            "raw_combined_markdown": "No real URLs could be retrieved. Check your internet connection or try again later.",
+            "source_count": 0,
+            "scraped_data": {}
         }
 
 def generate_mermaid_flowchart(idea, failures):
@@ -387,7 +357,7 @@ def step_by_step_extractor(raw_text, idea, model=None):
 
 def calculate_quality_score(source_count, raw_text):
     import re
-    if not raw_text:
+    if not raw_text or source_count == 0:
         return 0.0
     
     # 1. Source diversity (0.0 - 0.3)
@@ -416,6 +386,7 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
     raw_text = research_results["combined_text"]
     urls_scraped = research_results["urls"]
     source_count = research_results["source_count"]
+    scraped_data = research_results.get("scraped_data", {})
     
     if strategy_metadata is None:
         strategy_metadata = {
@@ -425,7 +396,7 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
                 f'{idea} shut down',
                 f'{idea} abandoned'
             ],
-            "scraper_type": "crawl4ai_BS4_fallback",
+            "scraper_type": "jina_ai_reader",
             "prompt_version": 1
         }
         
@@ -436,17 +407,28 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
         active_tasks_dict[task_id]["current_step"] = "Analyzing signals using local LLM..."
         active_tasks_dict[task_id]["message"] = "Extracting UX, Tech, and Cost failure patterns..."
         
-    if "All search engines blocked" in raw_text:
-        gathered_str = "Fallback used"
-        cleaned_str = "Deduplicated fallback insight"
-        cleaned_text = raw_text
+    if source_count == 0:
+        gathered_str = "0 sources scraped"
+        cleaned_str = "0 unique signals"
+        cleaned_text = "⚠️ No real web pages could be fetched. Your analysis is based on zero live data."
     else:
-        gathered_str = f"{source_count} sources scraped" if source_count > 0 else "0 sources scraped"
+        gathered_str = f"{source_count} sources scraped"
         cleaned_str = f"{source_count} unique signals"
         
         graveyard_lines = []
         for i, url in enumerate(urls_scraped):
-            graveyard_lines.append(f"Source: Scraped Link {i+1} ({url})")
+            text = scraped_data.get(url, "")
+            snippet = ""
+            if text:
+                clean_lines = [line.strip() for line in text.split('\n') if line.strip()]
+                clean_text = " ".join(clean_lines)
+                snippet = clean_text[:300].strip()
+                if len(clean_text) > 300:
+                    snippet += "..."
+            if snippet:
+                graveyard_lines.append(f"Source {i+1}: {url}\nExcerpt: {snippet}\n")
+            else:
+                graveyard_lines.append(f"Source {i+1}: {url}\n")
         cleaned_text = "\n".join(graveyard_lines)
     
     data = step_by_step_extractor(raw_text, idea, model=model)
