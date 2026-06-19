@@ -88,16 +88,17 @@ def get_offline_fallback(idea):
         
     return "\n".join(matched_insights)
 
-def search_for_urls(idea):
+def search_for_urls(idea, queries=None):
     import time
     import random
     
-    queries = [
-        f'{idea} failure post mortem',
-        f'{idea} horror story',
-        f'{idea} shut down',
-        f'{idea} abandoned'
-    ]
+    if not queries:
+        queries = [
+            f'{idea} failure post mortem',
+            f'{idea} horror story',
+            f'{idea} shut down',
+            f'{idea} abandoned'
+        ]
     
     urls = set()
     user_agents = [
@@ -138,7 +139,7 @@ def search_for_urls(idea):
                 
     return list(urls)[:15]
 
-def deep_research_gather(idea, task_id=None, active_tasks_dict=None):
+def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=None):
     import time
     import random
     from urllib.parse import urlparse
@@ -148,7 +149,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None):
         active_tasks_dict[task_id]["current_step"] = "Searching the web for failure signals..."
         active_tasks_dict[task_id]["message"] = "Querying search engines..."
         
-    urls = search_for_urls(idea)
+    urls = search_for_urls(idea, queries)
     
     if not urls:
         print("[Scraper] No search results found. Using curated fallback database...")
@@ -403,14 +404,52 @@ def step_by_step_extractor(raw_text, idea):
     print("[Coroner] Running Project Coroner analysis...")
     return ask_llm_json(base_prompt, raw_text)
 
-def run_phoenixforge(idea, task_id=None, active_tasks_dict=None):
+def calculate_quality_score(source_count, raw_text):
+    import re
+    if not raw_text:
+        return 0.0
+    
+    # 1. Source diversity (0.0 - 0.3)
+    # Cap source count at 15
+    diversity_score = min(source_count, 15) / 15.0 * 0.3
+    
+    # 2. Word count density (0.0 - 0.3)
+    # Target is 2000 words
+    word_count = len(raw_text.split())
+    density_score = min(word_count, 2000) / 2000.0 * 0.3
+    
+    # 3. Metric extraction (0.0 - 0.4)
+    # Regex for metrics: numbers followed by %, $, USD, users, requests, etc.
+    metric_pattern = r'\b\d+(?:\.\d+)?\s*(?:%|\$|usd|users|requests|customers|clients|clicks|dollars|cents|minutes|seconds|hours|percent)\b'
+    metrics_found = len(re.findall(metric_pattern, raw_text, re.IGNORECASE))
+    metrics_score = min(metrics_found, 10) / 10.0 * 0.4
+    
+    total_score = diversity_score + density_score + metrics_score
+    return round(total_score, 2)
+
+def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, strategy_metadata=None):
     print(f"[PhoenixForge] Scanning: {idea}")
     audit = system_audit()
     
-    research_results = deep_research_gather(idea, task_id, active_tasks_dict)
+    research_results = deep_research_gather(idea, task_id, active_tasks_dict, queries)
     raw_text = research_results["combined_text"]
     urls_scraped = research_results["urls"]
     source_count = research_results["source_count"]
+    
+    if strategy_metadata is None:
+        strategy_metadata = {
+            "queries_used": queries or [
+                f'{idea} failure post mortem',
+                f'{idea} horror story',
+                f'{idea} shut down',
+                f'{idea} abandoned'
+            ],
+            "scraper_type": "crawl4ai_BS4_fallback",
+            "prompt_version": 1
+        }
+        
+    quality_score = calculate_quality_score(source_count, raw_text)
+    print(f"[Coroner] Quality score calculated: {quality_score}")
     
     if active_tasks_dict and task_id:
         active_tasks_dict[task_id]["current_step"] = "Analyzing signals using local LLM..."
@@ -471,7 +510,9 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None):
             raw_content=report,
             raw_combined_markdown=raw_text,
             scraped_urls=urls_scraped,
-            source_count=source_count
+            source_count=source_count,
+            strategy_metadata=strategy_metadata,
+            quality_score=quality_score
         )
         print("[History] Analysis successfully saved to SQLite history vault (phoenixforge.db)")
     except Exception as e:
@@ -483,7 +524,8 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None):
         "fixes": failures,
         "graveyard": cleaned_text,
         "pipeline": pipeline_metadata,
-        "raw_content": report
+        "raw_content": report,
+        "quality_score": quality_score
     }
 
 if __name__ == "__main__":

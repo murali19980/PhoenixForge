@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 import subprocess
 import os
 import json
@@ -15,7 +15,18 @@ app = FastAPI(title="PhoenixForge 🔥")
 active_tasks = {}
 
 class IdeaRequest(BaseModel):
-    idea: str
+    idea: str = Field(..., min_length=3, max_length=150)
+    
+    @validator('idea')
+    def sanitize_idea(cls, v):
+        # Reject HTML tags or script symbols to prevent XSS/HTML injection
+        if '<' in v or '>' in v:
+            raise ValueError('Idea cannot contain HTML/Script tag characters (< or >).')
+        # Allow only alphanumeric, spaces, and basic punctuation
+        sanitized = re.sub(r'[^a-zA-Z0-9\s\-_,\.!\?\'"()]', '', v)
+        if len(sanitized.strip()) < 3:
+            raise ValueError('Idea must contain at least 3 safe characters.')
+        return sanitized.strip()
 
 def extract_pipeline_metadata(content):
     pipeline = {"gathered": "N/A", "cleaned": "N/A", "organized": "N/A", "presented": "N/A"}
@@ -31,14 +42,30 @@ def extract_pipeline_metadata(content):
 
 async def run_pipeline_worker(task_id: str, idea: str):
     import engine
+    import coordinator
     try:
+        # Consult coordinator to get top performing strategies
+        best_strats = coordinator.get_best_strategies(limit=3)
+        
+        # Generate optimized queries based on past performance
+        queries, templates = coordinator.generate_optimized_queries(idea, best_strats)
+        
+        strategy_metadata = {
+            "query_templates": templates,
+            "queries_used": queries,
+            "scraper_type": "crawl4ai_BS4_fallback",
+            "prompt_version": 1
+        }
+        
         # Run the CPU-heavy scraping & LLM pipeline in a separate thread pool
         # to keep the FastAPI main event loop free for status polling.
         payload = await asyncio.to_thread(
             engine.run_phoenixforge,
             idea,
             task_id,
-            active_tasks
+            active_tasks,
+            queries,
+            strategy_metadata
         )
         active_tasks[task_id]["status"] = "completed"
         active_tasks[task_id]["current_step"] = "Completed"
@@ -76,6 +103,30 @@ async def get_task_status(task_id: str):
     if task_id not in active_tasks:
         raise HTTPException(status_code=404, detail="Task not found")
     return active_tasks[task_id]
+
+@app.get("/api/coordinator/status")
+async def get_coordinator_status():
+    try:
+        import coordinator
+        summary = coordinator.summarize_learning()
+        best = coordinator.get_best_strategies(limit=1)
+        best_score = best[0].get("quality_score", 0.0) if best else 0.0
+        return {
+            "status": "success",
+            "summary": summary,
+            "best_score": best_score
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/history/clear")
+async def clear_history():
+    try:
+        import history
+        history.clear_all_history()
+        return {"status": "success", "message": "History cleared successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 def render_mermaid_to_image(mermaid_code):
     import base64
