@@ -14,11 +14,10 @@ env/
 *.sqlite3
 
 # Reports and temporary files
-phoenixforge_report.pdf
-phoenixforge_report.docx
+*.pdf
+*.docx
+*.log
 phoenixforge_report.md
-test.pdf
-test.docx
 raw_data.txt
 
 # Editor / System config

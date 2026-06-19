@@ -10,4 +10,6 @@ newspaper3k
 googlesearch-python
 pdfkit
 beautifulsoup4
-lxml
+lxml~=5.3.0
+slowapi
+reportlab

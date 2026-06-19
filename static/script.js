@@ -23,6 +23,7 @@ const AppState = {
     isAnalyzing: false,
     pollAttempts: 0,
     currentTaskId: null,
+    currentHistoryId: null, // Keep track of the active history ID being viewed
     abortController: null
 };
 
@@ -42,7 +43,9 @@ function cacheDOM() {
         'graveyardContent', 'graveyardContainer',
         'pipelineCard', 'stepGatherIcon', 'stepGatherDesc', 'stepCleanIcon', 'stepCleanDesc',
         'stepOrganizeIcon', 'stepOrganizeDesc', 'stepPresentIcon', 'stepPresentDesc',
-        'exportPdfBtn', 'exportWordBtn', 'errorBanner', 'errorMessage', 'dismissError',
+        'exportCompletePdf', 'exportCompleteWord', 'exportCharterPdf', 'exportCharterWord', 
+        'exportPlanPdf', 'exportPlanWord',
+        'errorBanner', 'errorMessage', 'dismissError',
         'charCount', 'progressBar', 'progressPercent', 'toast', 'toastMessage', 'clearHistoryBtn',
         'coordinatorLearning', 'coordinatorScore'
     ];
@@ -243,6 +246,7 @@ async function loadHistory() {
                     const res = await fetch(`/api/history/${id}`);
                     if (!res.ok) throw new Error("Could not load history details");
                     const detail = await res.json();
+                    AppState.currentHistoryId = id; // Track active history record ID
                     DOM.ideaInput.value = detail.idea || DOM.ideaInput.value;
                     updateCharCount();
                     renderResults(detail);
@@ -265,6 +269,7 @@ async function loadHistory() {
 async function performAnalysis(idea) {
     if (AppState.isAnalyzing) return;
     AppState.isAnalyzing = true;
+    AppState.currentHistoryId = null; // Reset history ID so exports default to the new run
     hideError();
     resetPipeline();
 
@@ -364,6 +369,9 @@ async function performAnalysis(idea) {
         if (finalData) {
             updateProgress(100, "Done!");
             completePipelineStep('present', "Report compiled successfully");
+            if (finalData.id) {
+                AppState.currentHistoryId = finalData.id;
+            }
             renderResults(finalData);
             DOM.results.classList.remove('hidden');
             showToast("Risk analysis complete!", "success");
@@ -648,11 +656,31 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     // Exports click bindings
-    if (DOM.exportPdfBtn) {
-        DOM.exportPdfBtn.onclick = () => { window.location.href = '/api/export/pdf'; };
+    const getExportUrl = (docType, format) => {
+        let url = `/api/export/${docType}/${format}`;
+        if (AppState.currentHistoryId) {
+            url += `?id=${AppState.currentHistoryId}`;
+        }
+        return url;
+    };
+
+    if (DOM.exportCompletePdf) {
+        DOM.exportCompletePdf.onclick = () => { window.location.href = getExportUrl('complete', 'pdf'); };
     }
-    if (DOM.exportWordBtn) {
-        DOM.exportWordBtn.onclick = () => { window.location.href = '/api/export/word'; };
+    if (DOM.exportCompleteWord) {
+        DOM.exportCompleteWord.onclick = () => { window.location.href = getExportUrl('complete', 'word'); };
+    }
+    if (DOM.exportCharterPdf) {
+        DOM.exportCharterPdf.onclick = () => { window.location.href = getExportUrl('charter', 'pdf'); };
+    }
+    if (DOM.exportCharterWord) {
+        DOM.exportCharterWord.onclick = () => { window.location.href = getExportUrl('charter', 'word'); };
+    }
+    if (DOM.exportPlanPdf) {
+        DOM.exportPlanPdf.onclick = () => { window.location.href = getExportUrl('plan', 'pdf'); };
+    }
+    if (DOM.exportPlanWord) {
+        DOM.exportPlanWord.onclick = () => { window.location.href = getExportUrl('plan', 'word'); };
     }
 
     // Initial loads on boot

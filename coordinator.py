@@ -1,5 +1,9 @@
 import sqlite3
 import json
+import logging
+
+# Configure logger for this module
+logger = logging.getLogger("phoenixforge.coordinator")
 
 DB_PATH = "phoenixforge.db"
 
@@ -37,11 +41,11 @@ def get_best_strategies(limit=3):
                     "quality_score": r[2]
                 })
             except Exception as parse_err:
-                print(f"[Coordinator] Error parsing strategy JSON: {parse_err}")
+                logger.error(f"[Coordinator] Error parsing strategy JSON: {parse_err}")
                 
         return strategies
     except Exception as e:
-        print(f"[Coordinator] Failed to query best strategies: {e}")
+        logger.error(f"[Coordinator] Failed to query best strategies: {e}")
         return []
     finally:
         conn.close()
@@ -56,7 +60,7 @@ def generate_optimized_queries(idea, top_strategies):
     ]
     
     if not top_strategies:
-        print("[Coordinator] No past strategies found. Using default query templates.")
+        logger.info("[Coordinator] No past strategies found. Using default query templates.")
         return [t.replace("{idea}", idea) for t in default_templates], default_templates
         
     # Aggregate templates used in top strategies, weighted by quality score
@@ -85,7 +89,7 @@ def generate_optimized_queries(idea, top_strategies):
         if t not in selected_templates:
             selected_templates.append(t)
             
-    print(f"[Coordinator] Generated optimized query templates based on past wins: {selected_templates}")
+    logger.info(f"[Coordinator] Generated optimized query templates based on past wins: {selected_templates}")
     return [t.replace("{idea}", idea) for t in selected_templates], selected_templates
 
 def summarize_learning():

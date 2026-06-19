@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, validator
 import subprocess
@@ -7,9 +7,30 @@ import json
 import re
 import uuid
 import asyncio
+import logging
+import shutil
 from datetime import datetime
+from typing import Optional
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# Global standard logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('phoenixforge.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("phoenixforge")
+
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="PhoenixForge 🔥")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Global dict to store background task progress
 active_tasks = {}
@@ -18,15 +39,20 @@ class IdeaRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=150)
     
     @validator('idea')
-    def sanitize_idea(cls, v):
-        # Reject HTML tags or script symbols to prevent XSS/HTML injection
-        if '<' in v or '>' in v:
-            raise ValueError('Idea cannot contain HTML/Script tag characters (< or >).')
-        # Allow only alphanumeric, spaces, and basic punctuation
-        sanitized = re.sub(r'[^a-zA-Z0-9\s\-_,\.!\?\'"()]', '', v)
-        if len(sanitized.strip()) < 3:
-            raise ValueError('Idea must contain at least 3 safe characters.')
-        return sanitized.strip()
+    def validate_idea(cls, v: str) -> str:
+        # Allowed character set: letters, numbers, spaces, basic punctuation
+        allowed = re.compile(r'^[a-zA-Z0-9\s\-_,\.!?\'"()]+$')
+        if not allowed.match(v):
+            raise ValueError(
+                'Invalid characters. Only letters, numbers, spaces, '
+                'and basic punctuation (!?.,-\'"()) are allowed.'
+            )
+        # Block obvious injection/scripting patterns
+        blocked = {'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'EXEC', 
+                  'UNION', 'ALTER', 'CREATE', 'SCRIPT', 'ALERT', 'ONLOAD'}
+        if any(kw in v.upper() for kw in blocked):
+            raise ValueError('Input contains forbidden keywords or patterns.')
+        return v.strip()
 
 def extract_pipeline_metadata(content):
     pipeline = {"gathered": "N/A", "cleaned": "N/A", "organized": "N/A", "presented": "N/A"}
@@ -72,16 +98,25 @@ async def run_pipeline_worker(task_id: str, idea: str):
         active_tasks[task_id]["message"] = "Analysis report generated successfully."
         active_tasks[task_id]["results"] = payload
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error("Pipeline worker failed:", exc_info=True)
         active_tasks[task_id]["status"] = "failed"
         active_tasks[task_id]["current_step"] = "Analysis failed"
         active_tasks[task_id]["message"] = str(e)
 
 @app.post("/api/analyze")
-async def analyze_risk(request: IdeaRequest):
-    if not request.idea:
+@limiter.limit("3/minute")
+async def analyze_risk(request: Request, idea_req: IdeaRequest):
+    if not idea_req.idea:
         raise HTTPException(status_code=400, detail="Idea cannot be empty")
+    
+    # Enforce concurrency limit of 2 tasks per client IP
+    client_ip = request.client.host
+    running_tasks = sum(
+        1 for t in active_tasks.values() 
+        if t.get("client_ip") == client_ip and t.get("status") == "processing"
+    )
+    if running_tasks >= 2:
+        raise HTTPException(status_code=429, detail="Too many concurrent analyses from this IP. Please wait for them to finish.")
     
     task_id = str(uuid.uuid4())
     active_tasks[task_id] = {
@@ -90,11 +125,12 @@ async def analyze_risk(request: IdeaRequest):
         "extracted_count": 0,
         "total_articles": 0,
         "message": "Starting research agent...",
-        "results": None
+        "results": None,
+        "client_ip": client_ip
     }
     
     # Schedule task concurrently on the event loop
-    asyncio.create_task(run_pipeline_worker(task_id, request.idea))
+    asyncio.create_task(run_pipeline_worker(task_id, idea_req.idea))
     
     return {"task_id": task_id}
 
@@ -156,6 +192,8 @@ def render_mermaid_to_image(mermaid_code):
         print(f"mermaid.ink svg failed: {e}")
         
     # Strategy 2: Try local Mermaid CLI (mmdc) to render to SVG
+    input_path = None
+    output_path = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', encoding='utf-8', delete=False) as f:
             f.write(mermaid_code)
@@ -164,32 +202,37 @@ def render_mermaid_to_image(mermaid_code):
         
         # Try global mmdc first
         try:
+            mmdc_path = shutil.which("mmdc") or "mmdc"
             subprocess.run(
-                ['mmdc', '-i', input_path, '-o', output_path, '-b', 'transparent'],
+                [mmdc_path, '-i', input_path, '-o', output_path, '-b', 'transparent'],
                 check=True,
                 timeout=10,
-                capture_output=True,
-                shell=True
+                capture_output=True
             )
         except Exception as cli_err:
-            print(f"Direct mmdc failed, trying npx: {cli_err}")
+            logger.warning(f"Direct mmdc failed, trying npx: {cli_err}")
             # Try via npx
+            npx_path = shutil.which("npx") or "npx"
             subprocess.run(
-                ['npx', '--yes', '@mermaid-js/mermaid-cli', 'mmdc', '-i', input_path, '-o', output_path, '-b', 'transparent'],
+                [npx_path, '--yes', '@mermaid-js/mermaid-cli', 'mmdc', '-i', input_path, '-o', output_path, '-b', 'transparent'],
                 check=True,
                 timeout=15,
-                capture_output=True,
-                shell=True
+                capture_output=True
             )
             
         with open(output_path, 'rb') as f:
             svg_data = f.read()
             
-        os.unlink(input_path)
-        os.unlink(output_path)
         return base64.b64encode(svg_data).decode('utf-8'), "svg"
     except Exception as e:
-        print(f"Local Mermaid CLI failed: {e}")
+        logger.error(f"Local Mermaid CLI failed: {e}")
+    finally:
+        if input_path and os.path.exists(input_path):
+            try: os.unlink(input_path)
+            except: pass
+        if output_path and os.path.exists(output_path):
+            try: os.unlink(output_path)
+            except: pass
         
     # Strategy 3: Fallback placeholder (a clean text box SVG)
     placeholder_svg = f'''
@@ -205,351 +248,85 @@ def render_mermaid_to_image(mermaid_code):
     '''
     return base64.b64encode(placeholder_svg.encode('utf-8')).decode('utf-8'), "svg"
 
-@app.get("/api/export/pdf")
-async def export_pdf():
-    from fastapi.responses import FileResponse
-    import urllib.parse
-    import base64
-    import requests
-    import shutil
-    import pdfkit
-    import history
-    
-    recent = history.get_recent_analyses(limit=1)
-    if not recent:
-        raise HTTPException(status_code=404, detail="No report found. Please run analysis first.")
-        
-    last_id = recent[0]["id"]
-    data = history.get_analysis_by_id(last_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Report details not found.")
-        
-    idea = data["idea"]
-    heatmap = data["heatmap"]
-    fixes = data["fixes"]
-    graveyard_text = data["graveyard"]
-    md_content = data["raw_content"]
-    scraped_urls = data.get("scraped_urls", [])
+@app.get("/api/export/charter/pdf")
+async def export_charter_pdf(id: Optional[int] = None):
+    """Export Project Charter as PDF."""
+    return await export_document("charter", "pdf", id)
 
-    # 1. Parse Mermaid flowchart block
-    mermaid_code = ""
-    mermaid_match = re.search(r'```mermaid\s*([\s\S]*?)```', md_content)
-    if mermaid_match:
-        mermaid_code = mermaid_match.group(1).strip()
-            
-    # Fetch visual flowchart
-    img_tag = ""
-    if mermaid_code:
-        b64_data, mime_type = render_mermaid_to_image(mermaid_code)
-        img_tag = f'<div style="text-align: center; margin: 15px 0;"><img src="data:image/{mime_type};base64,{b64_data}" style="max-width: 100%; height: auto;"></div>'
+@app.get("/api/export/charter/word")
+async def export_charter_word(id: Optional[int] = None):
+    """Export Project Charter as Word document."""
+    return await export_document("charter", "word", id)
 
-    # Build sources table
-    sources_html = ""
-    if scraped_urls:
-        sources_html += """
-        <div class="section-title">🌐 Sources Scraped</div>
-        <div style="font-size: 9.5pt; color: #475569; margin-top: 5px;">
-            <table style="width: 100%; border-collapse: collapse; margin-top: 8px;">
-        """
-        for i, url in enumerate(scraped_urls):
-            from urllib.parse import urlparse
-            domain = urlparse(url).netloc or f"Source {i+1}"
-            sources_html += f"""
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                    <td style="padding: 8px 0; font-weight: bold; width: 45%;">{domain}</td>
-                    <td style="padding: 8px 0; font-family: monospace; font-size: 8.5pt;"><a href="{url}" style="color: #dc2626; text-decoration: none;">{url}</a></td>
-                </tr>
-            """
-        sources_html += """
-            </table>
-        </div>
-        """
+@app.get("/api/export/plan/pdf")
+async def export_plan_pdf(id: Optional[int] = None):
+    """Export Project Management Plan as PDF."""
+    return await export_document("plan", "pdf", id)
 
-    # Compile dynamic Executive Summary
-    cost_risks = [f["issue"] for f in fixes if f.get("category") == "Cost"]
-    text_risks = [f["issue"] for f in fixes if f.get("category") == "Tech"]
-    ux_risks = [f["issue"] for f in fixes if f.get("category") == "UX"]
-    pivots = [f["issue"] for f in fixes if f.get("category") == "General"]
-    
-    summary_text = ""
-    all_risks_text = ", ".join(ux_risks + text_risks + cost_risks)
-    if all_risks_text:
-        summary_text += f"The proposed idea faces several critical threats: {all_risks_text}. "
-    else:
-        summary_text += "The proposed idea faces low direct market friction, but you should proceed with caution. "
-    
-    pivots_text = " and ".join([p.replace("Pivot Strategy ", "").replace("Pivot Strategy 1: ", "").replace("Pivot Strategy 2: ", "") for p in pivots])
-    if pivots_text:
-        summary_text += f"To survive and capture value, consider these pivot options: {pivots_text}."
+@app.get("/api/export/plan/word")
+async def export_plan_word(id: Optional[int] = None):
+    """Export Project Management Plan as Word document."""
+    return await export_document("plan", "word", id)
 
-    # Severity mappings
-    def get_severity(value):
-        return "Very High" if value >= 3 else "High" if value == 2 else "Medium" if value == 1 else "Low"
+@app.get("/api/export/complete/pdf")
+async def export_complete_pdf(id: Optional[int] = None):
+    """Export Complete Report as PDF."""
+    return await export_document("complete", "pdf", id)
+
+@app.get("/api/export/complete/word")
+async def export_complete_word(id: Optional[int] = None):
+    """Export Complete Report as Word document."""
+    return await export_document("complete", "word", id)
+
+async def export_document(doc_type: str, format: str, id: Optional[int] = None):
+    """Generic document export handler generating files completely in memory."""
+    try:
+        import history
+        import documents
         
-    def get_color(value):
-        return "#ef4444" if value >= 3 else "#f97316" if value == 2 else "#eab308" if value == 1 else "#10b981"
-        
-    cost_val = heatmap.get("Cost", 0)
-    tech_val = heatmap.get("Tech", 0)
-    ux_val = heatmap.get("UX", 0)
-    
-    cost_sev = get_severity(cost_val)
-    tech_sev = get_severity(tech_val)
-    ux_sev = get_severity(ux_val)
-    
-    cost_color = get_color(cost_val)
-    tech_color = get_color(tech_val)
-    ux_color = get_color(ux_val)
-    
-    # Format actionable fixes list
-    fixes_html = ""
-    for idx, fix in enumerate(fixes):
-        title = ""
-        desc = fix.get("issue", "")
-        category = fix.get("category", "General")
-        if category == "General":
-            parts = desc.split(":")
-            if len(parts) > 1:
-                title = parts[0].strip()
-                desc = parts[1].strip()
-            else:
-                title = "Pivot Strategy"
+        # 1. Fetch analysis details from SQLite
+        if id is not None:
+            db_data = history.get_analysis_by_id(id)
         else:
-            title = f"Mitigate {category} Failure"
+            recent = history.get_recent_analyses(limit=1)
+            if not recent:
+                raise HTTPException(status_code=404, detail="No report found. Please run analysis first.")
+            db_data = history.get_analysis_by_id(recent[0]["id"])
             
-        fixes_html += f"""
-        <div style="margin-bottom: 12px; padding: 10px; background-color: #f8fafc; border-left: 4px solid #64748b; border-radius: 4px;">
-            <div style="font-weight: bold; font-size: 11pt; color: #0f172a;">Option {idx + 1}: {title}</div>
-            <div style="font-size: 10pt; color: #475569; margin-top: 4px;">{desc}</div>
-        </div>
-        """
+        if not db_data:
+            raise HTTPException(status_code=404, detail="Report details not found.")
+            
+        # 2. Extract structured analysis data
+        data = documents.extract_analysis_data(
+            raw_content=db_data["raw_content"],
+            heatmap=db_data["heatmap"],
+            fixes=db_data["fixes"],
+            graveyard=db_data["graveyard"],
+            idea=db_data["idea"]
+        )
         
-    # Styled HTML Template
-    styled_html = f"""
-    <html>
-    <head>
-    <style>
-        @page {{
-            size: letter;
-            margin: 0.8in;
-        }}
-        body {{
-            font-family: Helvetica, Arial, sans-serif;
-            color: #1e293b;
-            line-height: 1.5;
-        }}
-        .header {{
-            border-bottom: 3px solid #dc2626;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
-        }}
-        .title {{
-            font-size: 22pt;
-            font-weight: bold;
-            color: #dc2626;
-        }}
-        .subtitle {{
-            font-size: 10pt;
-            color: #64748b;
-            margin-top: 5px;
-            text-transform: uppercase;
-        }}
-        .section-title {{
-            font-size: 13pt;
-            font-weight: bold;
-            color: #0f172a;
-            margin-top: 20px;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #e2e8f0;
-            padding-bottom: 4px;
-        }}
-        .summary-box {{
-            background-color: #ffedd5;
-            border: 1px solid #fed7aa;
-            padding: 12px;
-            border-radius: 6px;
-            font-size: 10pt;
-            color: #9a3412;
-            margin-bottom: 15px;
-        }}
-        .risk-table {{
-            width: 100%;
-            margin-bottom: 15px;
-        }}
-        .risk-card {{
-            width: 31%;
-            padding: 12px;
-            border-radius: 6px;
-            border: 1px solid #e2e8f0;
-            background-color: #f8fafc;
-            text-align: center;
-        }}
-        .graveyard {{
-            background-color: #fef2f2;
-            border: 1px solid #fee2e2;
-            border-left: 4px solid #ef4444;
-            padding: 12px;
-            border-radius: 6px;
-            font-family: Courier, monospace;
-            font-size: 9.5pt;
-            color: #991b1b;
-            margin-bottom: 15px;
-        }}
-    </style>
-    </head>
-    <body>
-        <div class="header">
-            <div class="title">🐦🔥 PhoenixForge Autopsy Report</div>
-            <div class="subtitle">Idea: {idea} &bull; Generated on: {datetime.now().strftime('%Y-%m-%d')}</div>
-        </div>
+        # 3. Generate document (docx or PDF bytes) in memory
+        content = documents.generate_document(data, doc_type, format)
         
-        <div class="section-title">🔍 Executive Summary</div>
-        <div class="summary-box">
-            {summary_text}
-        </div>
+        filename = f"phoenixforge_{doc_type}_{data['idea'][:30].strip().replace(' ', '_')}.{format}"
+        if format == 'pdf':
+            media_type = 'application/pdf'
+        else:
+            media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         
-        <div class="section-title">📊 Risk Assessment Heatmap</div>
-        <table class="risk-table">
-            <tr>
-                <td class="risk-card" style="border-top: 4px solid {cost_color};">
-                    <div style="font-size: 9pt; color: #64748b; font-weight: bold; text-transform: uppercase;">Financial & Scaling</div>
-                    <div style="font-size: 14pt; font-weight: bold; color: {cost_color}; margin-top: 6px;">{cost_sev}</div>
-                    <div style="font-size: 8pt; color: #94a3b8; margin-top: 4px;">{cost_val} risk signals detected</div>
-                </td>
-                <td style="width: 3.5%;"></td>
-                <td class="risk-card" style="border-top: 4px solid {tech_color};">
-                    <div style="font-size: 9pt; color: #64748b; font-weight: bold; text-transform: uppercase;">Market & B2B</div>
-                    <div style="font-size: 14pt; font-weight: bold; color: {tech_color}; margin-top: 6px;">{tech_sev}</div>
-                    <div style="font-size: 8pt; color: #94a3b8; margin-top: 4px;">{tech_val} risk signals detected</div>
-                </td>
-                <td style="width: 3.5%;"></td>
-                <td class="risk-card" style="border-top: 4px solid {ux_color};">
-                    <div style="font-size: 9pt; color: #64748b; font-weight: bold; text-transform: uppercase;">UX & Retention</div>
-                    <div style="font-size: 14pt; font-weight: bold; color: {ux_color}; margin-top: 6px;">{ux_sev}</div>
-                    <div style="font-size: 8pt; color: #94a3b8; margin-top: 4px;">{ux_val} risk signals detected</div>
-                </td>
-            </tr>
-        </table>
-        
-        <div class="section-title">💀 The Graveyard (Negative Signals)</div>
-        <div style="font-size: 8.5pt; color: #64748b; margin-bottom: 6px; font-style: italic;">Scraped user complaints and autopsies:</div>
-        <div class="graveyard">
-            {graveyard_text.replace('\n', '<br>')}
-        </div>
-        
-        <div class="section-title">🗺️ System Flowchart (Architecture Risks)</div>
-        {img_tag}
-        
-        <div class="section-title">🩹 Actionable Fixes & Pivot Options</div>
-        <div style="margin-top: 8px;">
-            {fixes_html}
-        </div>
-        
-        {sources_html}
-        
-        <div style="text-align: right; font-size: 8pt; color: #94a3b8; margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 8px;">
-            Page <pdf:pagenumber>
-        </div>
-    </body>
-    </html>
-    """
-    
-    pdf_path = "phoenixforge_report.pdf"
-    pdf_generated = False
-    
-    wkhtml_path = shutil.which("wkhtmltopdf")
-    if not wkhtml_path:
-        common_paths = [
-            r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
-            r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe"
-        ]
-        for p in common_paths:
-            if os.path.exists(p):
-                wkhtml_path = p
-                break
-                
-    if wkhtml_path:
-        try:
-            print(f"Generating PDF with pdfkit using wkhtmltopdf from: {wkhtml_path}")
-            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path)
-            options = {
-                'page-size': 'Letter',
-                'margin-top': '0.8in',
-                'margin-right': '0.8in',
-                'margin-bottom': '0.8in',
-                'margin-left': '0.8in',
-                'encoding': "UTF-8",
-                'no-outline': None,
-                'enable-local-file-access': None
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename}\"",
+                "Access-Control-Expose-Headers": "Content-Disposition"
             }
-            pdfkit.from_string(styled_html, pdf_path, configuration=config, options=options)
-            pdf_generated = True
-        except Exception as e:
-            print(f"pdfkit failed: {e}. Falling back to xhtml2pdf...")
-            
-    if not pdf_generated:
-        print("Generating PDF via xhtml2pdf fallback...")
-        from xhtml2pdf import pisa
-        with open(pdf_path, "w+b") as result_file:
-            pisa_status = pisa.CreatePDF(styled_html, dest=result_file)
-        if pisa_status.err:
-            raise HTTPException(status_code=500, detail="Failed to generate PDF via both pdfkit and xhtml2pdf")
-        
-    return FileResponse(pdf_path, media_type="application/pdf", filename="phoenixforge_report.pdf")
-
-@app.get("/api/export/word")
-async def export_word():
-    from docx import Document
-    from docx.shared import Inches
-    from fastapi.responses import FileResponse
-    import history
-    
-    recent = history.get_recent_analyses(limit=1)
-    if not recent:
-        raise HTTPException(status_code=404, detail="No report found. Please run analysis first.")
-        
-    last_id = recent[0]["id"]
-    data = history.get_analysis_by_id(last_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Report details not found.")
-        
-    content = data["raw_content"]
-    scraped_urls = data.get("scraped_urls", [])
-        
-    # Strip pipeline metadata
-    if "## Pipeline Metadata" in content:
-        content = content.split("## Pipeline Metadata")[0]
-    
-    doc = Document()
-    doc.add_heading("PhoenixForge Report", level=1)
-    
-    for line in content.split("\n"):
-        stripped_line = line.strip()
-        if not stripped_line:
-            continue
-        if stripped_line.startswith("# "):
-            doc.add_heading(stripped_line[2:], level=1)
-        elif stripped_line.startswith("## "):
-            doc.add_heading(stripped_line[3:], level=2)
-        elif stripped_line.startswith("### "):
-            doc.add_heading(stripped_line[4:], level=3)
-        elif stripped_line.startswith("```") or stripped_line.startswith("`"):
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Inches(0.5)
-            run = p.add_run(stripped_line)
-            run.font.name = 'Courier New'
-        else:
-            doc.add_paragraph(stripped_line)
-            
-    # Add sources section to word document
-    if scraped_urls:
-        doc.add_heading("Sources Scraped", level=2)
-        for url in scraped_urls:
-            doc.add_paragraph(url)
-            
-    export_path = "phoenixforge_report.docx"
-    doc.save(export_path)
-    return FileResponse(export_path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename="phoenixforge_report.docx")
+        )
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Failed to export {doc_type} as {format}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Export failed. Please check server logs.")
 
 @app.get("/api/history")
 async def get_history():
@@ -558,7 +335,8 @@ async def get_history():
         recent = history.get_recent_analyses(limit=10)
         return {"status": "success", "history": recent}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to retrieve history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve history list.")
 
 @app.get("/api/history/{id}")
 async def get_history_by_id(id: int):
@@ -581,7 +359,8 @@ async def get_history_by_id(id: int):
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to retrieve history detail for ID {id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve history entry.")
 
 # Mount static files to serve the frontend (must be defined after endpoints)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

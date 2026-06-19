@@ -5,66 +5,17 @@ import requests
 import time
 import urllib.parse
 import difflib
+import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from duckduckgo_search import DDGS
 import psutil
 from llm_router import ask_llm_json, CONFIG
 
-MEMORY_FILE = "memory.jsonl"
+# Configure logger for this module
+logger = logging.getLogger("phoenixforge.engine")
 
-FALLBACK_DATABASE = {
-    "resume": "Autopsy: AI resume tools fail because recruiters detect robotic language. 70% of resumes containing 'spearheaded' or 'synergized' are auto-rejected by ATS. Churn rate reaches 95% after one use.",
-    "scheduler": "Autopsy: Social media scheduling apps fail due to API token rate-limiting on X and LinkedIn. Pricing model doesn't cover token costs, resulting in $600/month losses at 1000 users.",
-    "fitness": "Autopsy: Fitness and workout logging apps suffer 90% churn by day 7 because users hate manual data entry. Failing to integrate with smart wearables causes complete failure.",
-    "chatbot": "Autopsy: Customer support chatbots fail because they hallucinate facts and cost $0.05 per conversation. Retailers abandon them because users get frustrated with looping answers.",
-    "ecommerce": "Autopsy: Dropshipping and niche e-commerce sites fail due to razor-thin 5% margins and ad acquisition costs exceeding average order value. 80% cart abandonment is normal.",
-    "delivery": "Autopsy: Local courier and food delivery startups fail because of the low density of orders and massive driver acquisition costs. Unit economics are negative on every single trip.",
-    "marketplace": "Autopsy: Two-sided marketplaces fail because they cannot solve the chicken-and-egg problem. Without supply (sellers), buyers leave; without buyers, sellers churn.",
-    "education": "Autopsy: EdTech platforms fail because students lack completion discipline (MOOC completion rates are <6%). Selling to universities has an impossible 18-month sales cycle.",
-    "crypto": "Autopsy: Web3 and crypto projects fail due to gas fee spikes, security exploits, and lack of real utility. 99% of users are speculative and churn as soon as token prices drop.",
-    "finance": "Autopsy: Personal finance apps fail because they require connecting bank APIs which frequently disconnect. Users are uncomfortable sharing financial credentials.",
-    "healthcare": "Autopsy: Digital health platforms fail due to complex HIPAA compliance requirements and resistance from doctors to adopt new software. Sales cycles are slow.",
-    "travel": "Autopsy: Travel itinerary planning apps fail because people only travel 1-2 times a year. Retention is near-zero, making customer acquisition costs unsustainable.",
-    "gaming": "Autopsy: Indie multiplayer games fail because they lack the critical mass of active players. New players join empty lobbies and quit within 3 minutes.",
-    "email": "Autopsy: Email productivity tools fail because Google and Microsoft integrate similar features for free. Users are reluctant to pay for standalone email extensions.",
-    "security": "Autopsy: Cybersecurity startups fail because selling to enterprise CISOs requires extensive compliance certifications (SOC2 Type II, ISO27001) that cost $50k+ upfront.",
-    "recruitment": "Autopsy: Job boards fail because they compete with LinkedIn. Companies refuse to pay for postings that don't yield qualified candidates.",
-    "collaboration": "Autopsy: Team wiki and documentation tools fail because Slack and Notion own the market. Users resist moving docs from where they already work.",
-    "analytics": "Autopsy: SaaS analytics tools fail because developers build simple dashboards in-house instead of paying a recurring fee. Data pipelines break, leading to churn.",
-    "crm": "Autopsy: Sales CRMs fail because sales reps hate manual data entry. Unless data is auto-logged, the CRM remains empty and gets cancelled.",
-    "marketing": "Autopsy: SEO optimization software fails because search engine algorithms update constantly, wiping out rankings overnight. Users cancel when their traffic drops.",
-    "productivity": "Autopsy: To-do lists and task managers fail because the market is saturated with free tools. The switching cost is zero, leading to 90% monthly churn.",
-    "dating": "Autopsy: Niche dating apps fail because of the demographic imbalance (often 9:1 male-to-female ratio). Once a user finds a match, they delete the app.",
-    "real estate": "Autopsy: Property management platforms fail because landlords are tech-averse. Collecting rent through the app incurs transaction fees they refuse to pay.",
-    "iot": "Autopsy: Smart home IoT hardware fails because manufacturing margins are thin, and firmware updates break device compatibility, causing massive return rates.",
-    "hardware": "Autopsy: Hardware startups fail because tooling and manufacturing costs require large upfront capital. Shipping delays of 6+ months kill consumer trust.",
-    "ai": "Autopsy: AI wrapper tools fail because OpenAI or Google releases the same feature natively. High API costs combined with zero moat results in instant churn.",
-    "music": "Autopsy: Music streaming and licensing platforms fail because record labels demand 70% of revenues in royalties, leaving zero margin for the platform.",
-    "video": "Autopsy: Video hosting and editing platforms fail due to massive AWS bandwidth costs. Free users upload gigabytes of files, draining company cash.",
-    "news": "Autopsy: Subscription news sites fail because users bypass paywalls. Banner ads generate less than $1 CPM, which doesn't cover content production costs.",
-    "blog": "Autopsy: Content management systems fail because WordPress, Substack, and Medium dominate. Creators prefer platforms with built-in discovery.",
-    "search": "Autopsy: Specialized search engines fail because Google's generalized search is good enough. Crawling the web requires millions in server costs.",
-    "social network": "Autopsy: Social networks fail because of the network effect. Users join but leave when their friends aren't active, causing a death spiral.",
-    "messaging": "Autopsy: Secure messaging apps fail because users refuse to switch away from WhatsApp or iMessage. Privacy is valued, but convenience wins.",
-    "backup": "Autopsy: Cloud backup solutions fail because Apple, Microsoft, and Google bundle automatic backup in their operating systems.",
-    "hosting": "Autopsy: Cloud hosting providers fail because they cannot compete with AWS, Azure, and GCP price cuts and data center footprints.",
-    "dns": "Autopsy: DNS and CDN providers fail because enterprise clients require 100% SLA guarantees. A single minute of downtime results in massive legal penalties.",
-    "weather": "Autopsy: Weather forecasting apps fail because every phone comes with a free, pre-installed weather app. Users won't pay for weather data.",
-    "map": "Autopsy: Navigation and mapping tools fail because Google Maps and Apple Maps are free and integrated. Collecting mapping data is incredibly expensive.",
-    "recipe": "Autopsy: Recipe and meal planning apps fail because recipes are free on blogs. Users hate paying a subscription to access basic cooking steps.",
-    "events": "Autopsy: Event ticket booking sites fail because Eventbrite dominates. Charging ticket fees drives organizers to self-host or use competitors.",
-    "ticket": "Autopsy: Customer ticketing systems fail because Zendesk owns the market. Switching ticketing software requires retraining support staff, which companies avoid.",
-    "legal": "Autopsy: Legal tech platforms fail because lawyers charge by the hour and are disincentivized to use efficiency-increasing software.",
-    "accounting": "Autopsy: Tax and accounting tools fail because tax laws change yearly. Building custom calculations is error-prone, leading to audit liabilities.",
-    "tax": "Autopsy: Tax filing calculators fail because government portals are offering free filing. The trust barrier for financial calculations is high.",
-    "portfolio": "Autopsy: Design portfolio builders fail because designers prefer hosting on Behance, Dribbble, or free GitHub Pages.",
-    "api": "Autopsy: API monitoring tools fail because developers use open-source library tools like Prometheus and Grafana for free.",
-    "dashboard": "Autopsy: Internal tool dashboard builders fail because companies use Retool or build basic pages in-house to keep data secure.",
-    "extension": "Autopsy: Browser extensions fail because browser updates break extension APIs constantly, requiring ongoing maintenance for zero revenue.",
-    "widgets": "Autopsy: Desktop widgets fail because users prefer clean screens. The novelty wears off in 3 days, causing 98% retention drop.",
-    "default": "Autopsy: Startup failure analysis shows 3 major causes: 1. Building something nobody wants (34% of cases). 2. Running out of money due to high marketing/API costs (22% of cases). 3. Getting crushed by incumbent platforms changing their policies or APIs (18% of cases)."
-}
+MEMORY_FILE = "memory.jsonl"
 
 def system_audit():
     ram = psutil.virtual_memory().total / (1024**3)
@@ -73,75 +24,98 @@ def system_audit():
         vram = int(subprocess.check_output(['nvidia-smi','--query-gpu=memory.total','--format=csv,noheader,nounits'], encoding='utf-8').split('\n')[0]) / 1024
     except:
         vram = 0
-    print(f"[System] RAM: {ram:.1f}GB, VRAM: {vram:.1f}GB")
+    logger.info(f"[System] RAM: {ram:.1f}GB, VRAM: {vram:.1f}GB")
     return {"ram": ram, "vram": vram}
 
-def get_offline_fallback(idea):
-    matched_insights = []
-    idea_lower = idea.lower()
-    for key, insight in FALLBACK_DATABASE.items():
-        if key in idea_lower:
-            matched_insights.append(f"[Curated Fallback - {key.capitalize()}] {insight}")
-    
-    if not matched_insights:
-        matched_insights.append(f"[Curated Fallback - General] {FALLBACK_DATABASE['default']}")
-        
-    return "\n".join(matched_insights)
+def get_offline_fallback(idea: str) -> str:
+    return (
+        f"[⚠️ REAL-TIME RESEARCH UNAVAILABLE] All search engines are temporarily "
+        f"blocked or rate-limited. Unable to perform real-time analysis for '{idea}'.\n\n"
+        f"Please try again in a few minutes, or manually search these resources:\n"
+        f"- https://www.failory.com/\n"
+        f"- https://news.ycombinator.com/\n"
+        f"- https://www.reddit.com/r/startups/\n"
+        f"- https://www.cbinsights.com/research/startup-failure-reasons/"
+    )
 
-def search_for_urls(idea, queries=None):
-    import time
+def search_for_urls(idea: str, queries=None):
+    """
+    Search DuckDuckGo (and Google as fallback) for relevant startup failure signals.
+    """
     import random
+    from urllib.parse import urlparse
     
     if not queries:
         queries = [
-            f'{idea} failure post mortem',
-            f'{idea} horror story',
-            f'{idea} shut down',
-            f'{idea} abandoned'
+            f"{idea} failure post mortem",
+            f"{idea} horror story",
+            f"{idea} shut down",
+            f"{idea} abandoned"
         ]
+        
+    logger.info(f"[Search] Executing search queries for: {idea}")
+    urls = []
     
-    urls = set()
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
-    ]
-    
-    print("[Search] Querying DuckDuckGo...")
-    for q in queries:
+    # Try DuckDuckGo first
+    try:
+        from duckduckgo_search import DDGS
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+        ]
+        headers = {'User-Agent': random.choice(user_agents)}
+        
+        with DDGS(headers=headers) as ddgs:
+            for q in queries:
+                try:
+                    logger.info(f"[DDG Search] Querying: {q}")
+                    results = list(ddgs.text(q, max_results=3))
+                    if results:
+                        for r in results:
+                            href = r.get('href')
+                            if href and href not in urls:
+                                urls.append(href)
+                except Exception as ddg_single_err:
+                    logger.warning(f"[DDG Search] Query failed for '{q}': {ddg_single_err}")
+    except Exception as ddg_err:
+        logger.error(f"[DDG Search] Failed to initialize DDGS: {ddg_err}")
+        
+    # If DDG returned fewer than 4 URLs, try Google as a fallback
+    if len(urls) < 4:
+        logger.info("[Search] DuckDuckGo results insufficient. Trying Google Search fallback...")
         try:
-            headers = {'User-Agent': random.choice(user_agents)}
-            with DDGS(headers=headers) as ddgs:
-                results = list(ddgs.text(q, max_results=4))
-                for r in results:
-                    href = r.get('href')
-                    if href and href not in urls:
-                        if any(x in href for x in ['youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']):
-                            continue
-                        urls.add(href)
-            time.sleep(1.0)
-        except Exception as e:
-            print(f"[Warning] DDG query failed: {e}")
+            from googlesearch import search as google_search
+            for q in queries:
+                try:
+                    logger.info(f"[Google Search] Querying: {q}")
+                    results = list(google_search(q, num_results=3))
+                    for url in results:
+                        if url and url not in urls:
+                            urls.append(url)
+                except Exception as google_single_err:
+                    logger.warning(f"[Google Search] Query failed for '{q}': {google_single_err}")
+        except Exception as google_err:
+            logger.error(f"[Google Search] Failed to initialize Google Search: {google_err}")
             
-    # Fallback to google search (googlesearch-python)
-    if len(urls) < 5:
-        print("[Search] DDG yielded few results. Trying Google Search fallback...")
-        for q in queries:
-            try:
-                from googlesearch import search
-                google_results = search(q, num_results=4)
-                for url in google_results:
-                    if url and url not in urls:
-                        if any(x in url for x in ['youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']):
-                            continue
-                        urls.add(url)
-            except Exception as e:
-                print(f"[Warning] Google search query failed: {e}")
-                
-    return list(urls)[:15]
+    # Filter out common search engine URLs or noise
+    filtered_urls = []
+    ignored_domains = ['duckduckgo.com', 'google.com', 'bing.com', 'yahoo.com', 'wikipedia.org', 'youtube.com']
+    for url in urls:
+        try:
+            domain = urlparse(url).netloc.lower()
+            if not any(ignored in domain for ignored in ignored_domains):
+                filtered_urls.append(url)
+        except Exception:
+            pass
+            
+    # Return at most 5 URLs to keep it fast and low memory
+    return filtered_urls[:5]
 
 def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=None):
     import time
     import random
+    import gc
+    import psutil
     from urllib.parse import urlparse
     import urllib.parse
     
@@ -152,7 +126,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
     urls = search_for_urls(idea, queries)
     
     if not urls:
-        print("[Scraper] No search results found. Using curated fallback database...")
+        logger.info("[Scraper] No search results found. Using curated fallback database...")
         fallback_insight = get_offline_fallback(idea)
         warning_msg = f"[Warning] All search engines blocked. Using local fallback.\n\n{fallback_insight}"
         return {
@@ -167,7 +141,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
         active_tasks_dict[task_id]["current_step"] = f"Found {len(urls)} target URLs."
         active_tasks_dict[task_id]["message"] = f"Beginning batch scrape of {len(urls)} targets..."
         
-    print(f"[Scraper] Deduplicated target URLs ({len(urls)}): {urls}")
+    logger.info(f"[Scraper] Deduplicated target URLs ({len(urls)}): {urls}")
     
     scraped_data = {}
     crawl4ai_success = False
@@ -185,13 +159,19 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                 browser_type="chromium",
                 headless=True,
                 verbose=False,
+                text_mode=True,      # Blocks images
+                light_mode=True,     # Disables background features
                 extra_args=[
                     "--blink-settings=imagesEnabled=false",
                     "--disable-background-networking",
                     "--disable-default-apps",
                     "--disable-sync",
                     "--no-sandbox",
-                    "--disable-dev-shm-usage"
+                    "--disable-dev-shm-usage",
+                    "--single-process",   # REDUCES MEMORY FOOTPRINT
+                    "--no-zygote",        # DISABLES ZYGOTE PROCESS
+                    "--disable-gpu",      # NO GPU IN HEADLESS
+                    "--js-flags=--max-old-space-size=512"  # LIMIT JS HEAP
                 ]
             )
             prune_filter = PruningContentFilter(
@@ -211,16 +191,6 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                 delay_before_return_html=1.5
             )
             
-            dispatcher = MemoryAdaptiveDispatcher(
-                rate_limiter=RateLimiter(
-                    base_delay=(1.0, 3.0),
-                    max_delay=15.0,
-                    max_retries=2
-                ),
-                memory_threshold_percent=70.0,
-                max_session_permit=1  # 1 concurrent tab only
-            )
-            
             nonlocal scraped_data
             async with AsyncWebCrawler(config=browser_config) as crawler:
                 for idx, url in enumerate(url_list):
@@ -229,7 +199,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                         active_tasks_dict[task_id]["current_step"] = f"Scraping {idx+1}/{len(url_list)}: {netloc}"
                         active_tasks_dict[task_id]["message"] = "Crawling page..."
                         
-                    print(f"[Crawl4AI] Scraping {idx+1}/{len(url_list)}: {url}")
+                    logger.info(f"[Crawl4AI] Scraping {idx+1}/{len(url_list)}: {url}")
                     try:
                         res = await crawler.arun(url=url, config=run_config)
                         if res.success:
@@ -238,25 +208,36 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                                 scraped_data[url] = content
                                 if active_tasks_dict and task_id:
                                     active_tasks_dict[task_id]["extracted_count"] += 1
-                                print(f"  [Success] Extracted {len(content)} chars")
+                                logger.info(f"  [Success] Extracted {len(content)} chars")
                             else:
-                                print(f"  [Warning] Empty content from {url}")
+                                logger.warning(f"  [Warning] Empty content from {url}")
                         else:
-                            print(f"  [Error] Failed to crawl {url}: {res.error_message}")
+                            logger.error(f"  [Error] Failed to crawl {url}: {res.error_message}")
                     except Exception as single_err:
-                        print(f"  [Error] Error crawling {url}: {single_err}")
+                        logger.error(f"  [Error] Error crawling {url}: {single_err}")
                         
                     await asyncio.sleep(random.uniform(1.0, 3.0))
         
-        asyncio.run(run_crawl4ai_scrape(urls))
+        try:
+            asyncio.run(run_crawl4ai_scrape(urls))
+        finally:
+            # Force garbage collection and clean up chromium processes to solve memory leaks
+            gc.collect()
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] in ('chromium', 'chrome', 'chromedriver'):
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
         crawl4ai_success = len(scraped_data) > 0
         
     except Exception as e:
-        print(f"[Warning] Crawl4AI failed: {e}. Falling back to requests+BeautifulSoup...")
+        logger.warning(f"[Warning] Crawl4AI failed: {e}. Falling back to requests+BeautifulSoup...")
         
     # Fallback Scraper: Requests + BeautifulSoup + Deduplication
     if not crawl4ai_success:
-        print("[Scraper] Running lightweight requests + BeautifulSoup scraper...")
+        logger.info("[Scraper] Running lightweight requests + BeautifulSoup scraper...")
         import requests
         import difflib
         from bs4 import BeautifulSoup
@@ -272,7 +253,7 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                 active_tasks_dict[task_id]["current_step"] = f"Scraping {idx+1}/{len(urls)}: {netloc} (Fallback)"
                 active_tasks_dict[task_id]["message"] = "Fetching raw HTML..."
                 
-            print(f"[Fallback] Scraping {idx+1}/{len(urls)}: {url}")
+            logger.info(f"[Fallback] Scraping {idx+1}/{len(urls)}: {url}")
             try:
                 headers = {'User-Agent': random.choice(user_agents)}
                 r = requests.get(url, headers=headers, timeout=15)
@@ -295,9 +276,9 @@ def deep_research_gather(idea, task_id=None, active_tasks_dict=None, queries=Non
                             scraped_data[url] = text[:5000]
                             if active_tasks_dict and task_id:
                                 active_tasks_dict[task_id]["extracted_count"] += 1
-                            print(f"  [Success] Extracted {len(text)} chars (BS4)")
+                            logger.info(f"  [Success] Extracted {len(text)} chars (BS4)")
                         else:
-                            print(f"  [Warning] Duplicate content skipped: {url}")
+                            logger.warning(f"  [Warning] Duplicate content skipped: {url}")
                 else:
                     print(f"  [Error] HTTP {r.status_code} on {url}")
             except Exception as single_err:
@@ -401,7 +382,7 @@ def step_by_step_extractor(raw_text, idea):
     
     Do not include anything else. No markdown, no explanations. Just the raw JSON.
     """
-    print("[Coroner] Running Project Coroner analysis...")
+    logger.info("[Coroner] Running Project Coroner analysis...")
     return ask_llm_json(base_prompt, raw_text)
 
 def calculate_quality_score(source_count, raw_text):
@@ -428,7 +409,7 @@ def calculate_quality_score(source_count, raw_text):
     return round(total_score, 2)
 
 def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, strategy_metadata=None):
-    print(f"[PhoenixForge] Scanning: {idea}")
+    logger.info(f"[PhoenixForge] Scanning: {idea}")
     audit = system_audit()
     
     research_results = deep_research_gather(idea, task_id, active_tasks_dict, queries)
@@ -449,7 +430,7 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
         }
         
     quality_score = calculate_quality_score(source_count, raw_text)
-    print(f"[Coroner] Quality score calculated: {quality_score}")
+    logger.info(f"[Coroner] Quality score calculated: {quality_score}")
     
     if active_tasks_dict and task_id:
         active_tasks_dict[task_id]["current_step"] = "Analyzing signals using local LLM..."
@@ -496,12 +477,13 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
     report = f"# 🐦🔥 PhoenixForge Report: {idea}\n\n## Risk Heatmap\n{json.dumps({'Cost': len(cost_risks), 'Tech': len(market_risks), 'UX': len(ux_risks)}, indent=2)}\n\n{mermaid_flowchart}\n\n## 📉 The Graveyard\n{cleaned_text}\n\n## Actionable Fixes\n{json.dumps(failures, indent=2)}\n\n## Pipeline Metadata\n{json.dumps(pipeline_metadata, indent=2)}"
     with open("phoenixforge_report.md", "w", encoding='utf-8') as f: f.write(report)
     with open(MEMORY_FILE, "a", encoding='utf-8') as f: f.write(json.dumps({"idea": idea, "failures": failures, "date": str(datetime.now())}) + "\n")
-    print("[Report] Report saved to phoenixforge_report.md")
+    logger.info("[Report] Report saved to phoenixforge_report.md")
     
     # Save to SQLite history vault
+    analysis_id = None
     try:
         import history
-        history.save_analysis(
+        analysis_id = history.save_analysis(
             idea=idea,
             full_scraped_text=raw_text,
             heatmap_dict={'Cost': len(cost_risks), 'Tech': len(market_risks), 'UX': len(ux_risks)},
@@ -514,12 +496,13 @@ def run_phoenixforge(idea, task_id=None, active_tasks_dict=None, queries=None, s
             strategy_metadata=strategy_metadata,
             quality_score=quality_score
         )
-        print("[History] Analysis successfully saved to SQLite history vault (phoenixforge.db)")
+        logger.info(f"[History] Analysis successfully saved to SQLite history vault (phoenixforge.db), ID: {analysis_id}")
     except Exception as e:
-        print(f"[History] Failed to save to SQLite database: {e}")
+        logger.error(f"[History] Failed to save to SQLite database: {e}")
         
     return {
         "status": "success",
+        "id": analysis_id,
         "heatmap": {'Cost': len(cost_risks), 'Tech': len(market_risks), 'UX': len(ux_risks)},
         "fixes": failures,
         "graveyard": cleaned_text,

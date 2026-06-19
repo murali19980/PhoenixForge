@@ -1,6 +1,10 @@
 import sqlite3
 import json
+import logging
 from datetime import datetime
+
+# Configure logger for this module
+logger = logging.getLogger("phoenixforge.history")
 
 DB_PATH = "phoenixforge.db"
 
@@ -54,37 +58,37 @@ def init_db():
         columns = [row[1] for row in cursor.fetchall()]
         
         if "raw_combined_markdown" not in columns:
-            print("Adding raw_combined_markdown column to results table...")
+            logger.info("Adding raw_combined_markdown column to results table...")
             cursor.execute("ALTER TABLE results ADD COLUMN raw_combined_markdown TEXT;")
             
         if "scraped_urls" not in columns:
-            print("Adding scraped_urls column to results table...")
+            logger.info("Adding scraped_urls column to results table...")
             cursor.execute("ALTER TABLE results ADD COLUMN scraped_urls TEXT;")
             
         if "source_count" not in columns:
-            print("Adding source_count column to results table...")
+            logger.info("Adding source_count column to results table...")
             cursor.execute("ALTER TABLE results ADD COLUMN source_count INTEGER;")
             
         conn.commit()
     except Exception as e:
-        print(f"Error during results migration: {e}")
-
+        logger.error(f"Error during results migration: {e}")
+ 
     # SAFE SCHEMA MIGRATION: check analyses table columns for strategy and score and alter if missing
     try:
         cursor.execute("PRAGMA table_info(analyses)")
         columns = [row[1] for row in cursor.fetchall()]
         
         if "strategy_metadata" not in columns:
-            print("Adding strategy_metadata column to analyses table...")
+            logger.info("Adding strategy_metadata column to analyses table...")
             cursor.execute("ALTER TABLE analyses ADD COLUMN strategy_metadata TEXT;")
             
         if "quality_score" not in columns:
-            print("Adding quality_score column to analyses table...")
+            logger.info("Adding quality_score column to analyses table...")
             cursor.execute("ALTER TABLE analyses ADD COLUMN quality_score REAL DEFAULT 0.0;")
             
         conn.commit()
     except Exception as e:
-        print(f"Error during analyses migration: {e}")
+        logger.error(f"Error during analyses migration: {e}")
         
     conn.commit()
     conn.close()
